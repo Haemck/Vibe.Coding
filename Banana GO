@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Digiseller: Banana GO + Кастомные закладки + Редактирование
+// @name         Digiseller: Banana GO + Кастомные закладки + GGSEL автоназвания + Popup редактирование
 // @namespace    http://tampermonkey.net/
 // @version      4.1
-// @description  Быстрый переход + история/закрепы/закладки, стиль поиска vibe, пасхалка! Кастомные закладки и редактирование внутри закрепов! 🦍🍌
+// @description  Быстрый переход + история/закрепы/закладки, стиль поиска vibe, popup-редактирование, автоназвание GGSEL 🦍🍌
 // @author       vibe.coding
 // @match        https://my.digiseller.ru/*
 // @match        https://ggsel.net/*
@@ -15,7 +15,6 @@
 
     const isGgsel = window.location.hostname.includes('ggsel.net');
 
-    // --- Если это страница товара GGSEL и нас просят вытащить sellerId (и сразу перейти) ---
     if (
         isGgsel &&
         /^(\/(en\/)?catalog\/product\/\d+)/.test(window.location.pathname) &&
@@ -105,7 +104,41 @@
 #vibe-jump-search-btn { margin-left: 5px; padding: 8px 10px 8px 12px; color: gold; font-size: 21px; border-radius: 8px; transition: background .15s; border: none; cursor: pointer;}
 #vibe-jump-search-btn:hover { background: #2c2f38; }
 #vibe-jump-msg { margin-top: 8px; font-size: 15px; color: #b8f68b; min-height: 20px; white-space: pre-line;}
+/* Popup */
+#vibe-edit-popup {
+    position: absolute; left: 50%; top: 70px; transform: translateX(-50%);
+    background: #23222d; color: #ffe37e; border: 2px solid gold; border-radius: 13px;
+    box-shadow: 0 4px 30px #000c, 0 1.5px 5px #0007;
+    padding: 17px 22px 12px 22px; z-index: 999999999;
+    min-width: 245px; max-width: 380px;
+    display: flex; flex-direction: column; align-items: stretch;
+}
+#vibe-edit-popup input {
+    font-size: 16px; padding: 7px 10px; border-radius: 7px;
+    border: 1.2px solid #ffe37e; background: #24272e; color: #ffe37e;
+    margin-bottom: 11px; outline: none;
+}
+#vibe-edit-popup button {
+    background: #232a1a; color: #ffe37e; border: 1px solid #cafc98;
+    border-radius: 8px; font-size: 15px; padding: 5px 13px;
+    margin-right: 8px; cursor: pointer;
+    transition: background 0.13s;
+}
+#vibe-edit-popup button:hover { background: #323e23; }
+#vibe-edit-popup .vibe-edit-popup-btns {
+    display: flex; flex-direction: row; justify-content: flex-end; align-items: center;
+}
 `;
+
+    // Добавим экранирование для безопасности в отрисовке
+    function escapeHtml(text) {
+        if (!text) return '';
+        return text.replace(/[&<>"']/g, function (m) {
+            return ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            })[m];
+        });
+    }
 
     if (!document.getElementById('vibe-css')) {
         let style = document.createElement('style');
@@ -233,6 +266,8 @@
     }
 
     let showHistory = false;
+    let editPopup = null;
+
     function renderHistory() {
         let sec = document.getElementById('vibe-history-section');
         if (!sec) return;
@@ -243,8 +278,8 @@
         if (pinList) {
             pinList.innerHTML = pins.length
                 ? pins.map((item, i) =>
-                    `<li class="vibe-history-pin" data-pindex="${i}" title="${item.desc||item.value}">
-                        <span>${item.desc||item.value}</span>
+                    `<li class="vibe-history-pin" data-pindex="${i}" title="${escapeHtml(item.desc||item.value)}">
+                        <span>${escapeHtml(item.desc||item.value)}</span>
                         <div class="vibe-hist-action">
                             <span class="vibe-edit" title="Переименовать">✏️</span>
                             <span class="vibe-unpin" title="Открепить">📌</span>
@@ -272,15 +307,25 @@
         let hList = document.getElementById('vibe-history-list');
         if (hList) {
             hList.innerHTML = hist.length
-                ? hist.map((item, i) =>
-                    `<li class="vibe-history-item" data-hindex="${i}" title="${item.desc||item.value}">
-                        <span>${item.desc||item.value}</span>
-                        <div class="vibe-hist-action">
-                            <span class="vibe-pin" title="Закрепить">📌</span>
-                            <span class="vibe-remove" title="Удалить">✖</span>
-                        </div>
-                    </li>`
-                ).join('')
+                ? hist.map((item, i) => {
+                    // Авто-переименование GGSEL товара (только если не было вручную)
+                    let desc = item.desc;
+                    if (
+                        item.type === "ggsel" &&
+                        /^https:\/\/ggsel\.net\/(en\/)?catalog\/product\/(\d+)/i.test(item.value) &&
+                        (!desc || desc === "GGSEL товар" || desc === item.value)
+                    ) {
+                        let m = item.value.match(/\/product\/(\d+)/i);
+                        if (m) desc = `Товар ${m[1]}`;
+                    }
+                    return `<li class="vibe-history-item" data-hindex="${i}" title="${escapeHtml(desc||item.value)}">
+                                <span>${escapeHtml(desc||item.value)}</span>
+                                <div class="vibe-hist-action">
+                                    <span class="vibe-pin" title="Закрепить">📌</span>
+                                    <span class="vibe-remove" title="Удалить">✖</span>
+                                </div>
+                            </li>`;
+                }).join('')
                 : `<li style="color:#666;font-size:14px;">(История пуста)</li>`;
         }
     }
@@ -335,7 +380,7 @@
             renderHistory();
         };
 
-        // --- История — события на списках (включая редактирование)
+        // --- История — события на списках (редакт popup)
         panel.addEventListener('click', function(e) {
             let editBtn = e.target.closest('.vibe-edit');
             if (editBtn) {
@@ -344,12 +389,11 @@
                     let pins = getPins();
                     let i = Number(li.dataset.pindex);
                     let current = pins[i];
-                    let newName = prompt("Введите новое имя закладки/закрепа:", current.desc || current.value);
-                    if (typeof newName === "string" && newName.trim()) {
+                    openEditPopup(current.desc || current.value, function(newName) {
                         pins[i].desc = newName.trim();
                         setPins(pins);
                         renderHistory();
-                    }
+                    });
                 }
                 return;
             }
@@ -404,6 +448,36 @@
         }, 120);
 
         renderHistory();
+    }
+
+    function openEditPopup(currentValue, onSave) {
+        if (editPopup) {
+            editPopup.remove();
+            editPopup = null;
+        }
+        editPopup = document.createElement('div');
+        editPopup.id = 'vibe-edit-popup';
+        editPopup.innerHTML = `
+            <input type="text" value="${escapeHtml(currentValue)}" maxlength="120">
+            <div class="vibe-edit-popup-btns">
+                <button type="button" id="vibe-edit-save">Сохранить</button>
+                <button type="button" id="vibe-edit-cancel">Отмена</button>
+            </div>
+        `;
+        document.body.appendChild(editPopup);
+        const input = editPopup.querySelector('input');
+        setTimeout(() => input.focus(), 100);
+        editPopup.querySelector('#vibe-edit-save').onclick = function() {
+            if (input.value.trim()) {
+                onSave(input.value);
+                editPopup.remove();
+                editPopup = null;
+            }
+        };
+        editPopup.querySelector('#vibe-edit-cancel').onclick = function() {
+            editPopup.remove();
+            editPopup = null;
+        };
     }
 
     function collapsePanel() {
@@ -487,9 +561,8 @@
                 localStorage.setItem(STORAGE_KEY+'_pending_seller', item.value);
                 window.location.href = `https://my.digiseller.ru/asp/search.asp?txt_NameSeller=${encodeURIComponent(item.value)}`;
             }
-        } else if (item.type === 'link') {
-            // Просто откроем ссылку
-            window.open(item.value, '_blank');
+        } else if (item.type === 'ggsel') {
+            window.location.href = item.value + (item.value.includes('?') ? '&' : '?') + 'extract_seller_from_hist=1';
         } else if (item.type === 'bookmark') {
             window.open(item.value, '_blank');
         }
@@ -505,12 +578,6 @@
 
     function isEmail(str) {
         return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(str.trim());
-    }
-
-    function getGgselProductIdFromUrl(url) {
-        // Извлекает последние цифры из ссылки товара
-        let match = url.match(/\/catalog\/product\/(\d+)/i);
-        return match ? match[1] : '';
     }
 
     function jumpAction() {
@@ -539,9 +606,7 @@
         const ggselProductReg = /^https:\/\/ggsel\.net\/(en\/)?catalog\/product\/\d+/i;
         if (ggselProductReg.test(value)) {
             log('Переходим на товар, чтобы вытащить seller id...');
-            // В ИСТОРИЮ записываем type: "link", value: ссылка, desc: "Ссылка {id}"
-            let prodId = getGgselProductIdFromUrl(value);
-            addToHistory({type:'link', value: value, desc: `Ссылка ${prodId}`});
+            addToHistory({type:'ggsel', value:value, desc:"GGSEL товар"});
             window.location.href = value + (value.includes('?') ? '&' : '?') + 'extract_seller=1';
             clearInput();
             return;
