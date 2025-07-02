@@ -1,0 +1,568 @@
+// ==UserScript==
+// @name         Digiseller: Banana GO (история, стиль поиска, ggsel → сообщения, пасхалка, no-panel-on-ggsel, anim, no-ui-on-ggsel, EN-seller-fix)
+// @namespace    http://tampermonkey.net/
+// @version      3.10
+// @description  Быстрый переход + история/закрепы сверху, стиль поиска vibe, пасхалка! UI не показывается на ggsel, но авто-прыжки работают всегда! EN-ggsel поддерживается!
+// @author       vibe.coding
+// @match        https://my.digiseller.ru/*
+// @match        https://ggsel.net/*
+// @run-at       document-end
+// @grant        none
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    const isGgsel = window.location.hostname.includes('ggsel.net');
+
+    // --- GGSEL: авто-прыжок к сообщениям продавца (ru/en) ---
+    if (
+        isGgsel &&
+        /^(\/(en\/)?catalog\/product\/\d+)/.test(window.location.pathname) &&
+        (
+            window.location.search.includes("extract_seller=1") ||
+            window.location.search.includes("extract_seller_from_hist=1")
+        )
+    ) {
+        // Поиск <a href="/sellers/ID... или <a href="/en/sellers/ID... на любой странице ggsel (любого языка)
+        let sellerLinks = Array.from(document.querySelectorAll('a[href*="/sellers/"]'));
+        let sellerId = null;
+        for (let link of sellerLinks) {
+            let href = link.getAttribute('href');
+            let idMatch = href && href.match(/sellers\/(\d+)/);
+            if (idMatch) {
+                sellerId = idMatch[1];
+                break;
+            }
+        }
+        if (sellerId) {
+            localStorage.setItem('banana_seller_id', sellerId);
+            window.location.href = "https://my.digiseller.ru/asp/seller_messages.asp?id_s=" + sellerId;
+        }
+        return;
+    }
+
+    if (isGgsel) return;
+
+    // --- Стили и анимация ---
+    const vibeCSS = `
+.ds-glow-btn { transition: box-shadow 0.16s, filter 0.13s;}
+.ds-glow-btn:hover { box-shadow: 0 0 18px 0 #ffd700cc, 0 1px 8px #ffe680b0; filter: brightness(1.09);}
+.ds-glow-btn.ds-green:hover { box-shadow: 0 0 18px 0 #8be881cc, 0 1px 8px #cafcd1b0;}
+#vibe-quickpanel {
+    position: fixed; right: 32px; bottom: 32px; z-index: 99999999;
+    background: rgba(28,32,44,0.98); color: #ffe37e; padding: 22px 30px 18px 28px;
+    border-radius: 18px; font-size: 17px; line-height: 1.7; font-family: Consolas, Segoe UI, Arial, sans-serif;
+    box-shadow: 0 10px 38px #000b,0 1.5px 4px #000a; border: 2px solid gold; min-width: 320px; min-height: 48px;
+    display: flex; flex-direction: column; align-items: flex-start;
+    opacity: 1; transform: scale(1); transition: opacity 0.32s, transform 0.22s;
+}
+#vibe-quickpanel.vibe-hide {
+    opacity: 0; pointer-events:none; transform: scale(0.96) translateY(32px);
+}
+#vibe-quickpanel-collapsed {
+    position: fixed; right: 30px; bottom: 30px; width: 60px; height: 60px;
+    background: rgba(30,34,44,0.97); color: gold; border-radius: 50%; border: 2px solid gold; z-index: 99999998;
+    box-shadow: 0 6px 22px #0008; font-size: 34px; display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    opacity: 1; transform: scale(1); transition: opacity 0.27s, transform 0.19s;
+}
+#vibe-quickpanel-collapsed.vibe-hide {
+    opacity: 0; pointer-events:none; transform: scale(0.75) translateY(30px);
+}
+#vibe-quickpanel-collapsed:hover { filter: brightness(1.15);}
+#vibe-quickpanel-close {
+    position: absolute; top: 14px; right: 14px; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
+    background: rgba(38,38,42,0.87); border-radius: 50%; border: 2px solid #ffe37e; color: #ffe37e;
+    font-size: 22px; font-weight: bold; cursor: pointer; opacity: 0.88; z-index:10; transition: background .15s, opacity .15s, box-shadow .15s;
+    box-shadow: 0 3px 14px #0005;
+}
+#vibe-quickpanel-close:hover { opacity: 1; background: #212227; box-shadow: 0 6px 26px #0008;}
+#vibe-quickpanel-header-row { display: flex; align-items: center; width: 100%; margin-bottom: 8px; margin-top: 0; }
+#vibe-quickpanel-title { font-size: 19px; font-weight: bold; color: gold; flex: none; letter-spacing:.02em; margin-right: 4px; display:flex; align-items:center; gap:2px;}
+#vibe-header-group { display:flex; align-items:center; gap:2px; flex:1 0 auto;}
+#vibe-history-btn { font-size: 26px; margin-left: 0; cursor: pointer; user-select:none; border-radius:8px; background:none; border:none; transition: filter .16s, background .12s; padding: 2px 6px 2px 3px; outline:none; height: 32px; display: flex; align-items: center;}
+#vibe-history-btn:active, #vibe-history-btn:hover { background: #23272b; filter: brightness(1.14);}
+.vibe-history-section { width:100%; margin-bottom:14px; transition: max-height .24s cubic-bezier(.4,0,.2,1), opacity .19s; overflow:hidden; max-height:600px; opacity:1;}
+.vibe-history-section.hide { max-height:0; opacity:0; pointer-events:none;}
+.vibe-history-title { margin-top:2px; color:gold;font-size:15px;margin-bottom:2px;font-weight:600;letter-spacing:.04em;}
+#vibe-history-list, #vibe-history-pins { width:100%;margin-top:0;margin-bottom:0;padding-left:0;list-style:none;}
+.vibe-history-item, .vibe-history-pin { display:flex;align-items:center;gap:8px;margin:0 0 2px 0;padding:4px 0 4px 0;border-bottom:1px solid #3332; font-size:15px;color:#ffe37e;cursor:pointer;border-radius:5px;transition:background .14s;}
+.vibe-history-item:hover, .vibe-history-pin:hover { background:#24262d;}
+.vibe-hist-action { margin-left:auto;display:flex;align-items:center;gap:7px;}
+.vibe-pin, .vibe-unpin { font-size:15px;cursor:pointer;opacity:.7;padding:1px 4px;transition:opacity .14s;}
+.vibe-pin:hover, .vibe-unpin:hover { opacity:1;}
+.vibe-remove { font-size:15px;color:#e57d7d;cursor:pointer;opacity:.7;padding:1px 4px;transition:opacity .14s;}
+.vibe-remove:hover { opacity:1;}
+#vibe-jump-input-group { display: flex; width: 100%; align-items: center; margin-bottom:0;}
+#vibe-jump-input { font-size: 17px; padding: 8px 14px 8px 12px; border-radius: 8px; border: 1.3px solid #ffe37e; outline: none; width: 90%; background: #25272e; color: #ffe37e; font-family: inherit; margin-right: 0; transition: box-shadow .14s;}
+#vibe-jump-input:focus { box-shadow: 0 0 0 2px gold; }
+#vibe-jump-search-btn, #vibe-jump-search-btn:hover, #vibe-jump-search-btn:focus { box-shadow: none !important; filter: none !important; outline: none !important; background: none;}
+#vibe-jump-search-btn svg, #vibe-jump-search-btn:hover svg { filter: none !important; box-shadow: none !important;}
+#vibe-jump-search-btn { margin-left: 5px; padding: 8px 10px 8px 12px; color: gold; font-size: 21px; border-radius: 8px; transition: background .15s; border: none; cursor: pointer;}
+#vibe-jump-search-btn:hover { background: #2c2f38; }
+#vibe-jump-msg { margin-top: 8px; font-size: 15px; color: #b8f68b; min-height: 20px; white-space: pre-line;}
+`;
+
+    if (!document.getElementById('vibe-css')) {
+        let style = document.createElement('style');
+        style.id = 'vibe-css';
+        style.textContent = vibeCSS;
+        document.head.appendChild(style);
+    }
+
+    const STORAGE_KEY = 'vibe-quick-jump-data';
+    const SELLER_CACHE_KEY = 'vibe-seller-cache';
+    const HISTORY_KEY = 'vibe-jump-history';
+    const HISTORY_PINS_KEY = 'vibe-jump-pins';
+
+    function extractOrderNumbers(val) {
+        return val.replace(/[\s,;]+/g, ',').split(',');
+    }
+    function goToOrders(orderIds) {
+        const validIds = orderIds.slice().reverse().map(x => x.replace(/[^\d]/g, '')).filter(x => x.length >= 3);
+        validIds.forEach(orderId => {
+            window.open(`https://my.digiseller.ru/asp/inv_of_buyer.asp?id_i=${orderId}`, '_blank');
+        });
+        setMsg('Открыто заказов: ' + validIds.length, true);
+        addToHistory({type:'orders', value: orderIds.join(', '), desc: 'Заказы: ' + validIds.join(', ')});
+    }
+    function sellerCache(loadOnly) {
+        let cache;
+        try { cache = JSON.parse(localStorage.getItem(SELLER_CACHE_KEY) || '{}'); }
+        catch(e) { cache = {}; }
+        if (loadOnly) return cache;
+        return {
+            get: function(nick) {
+                if (!nick) return null;
+                let c = sellerCache(true);
+                return c[nick.trim().toLowerCase()] || null;
+            },
+            set: function(nick, id) {
+                if (!nick || !id) return;
+                let c = sellerCache(true);
+                c[nick.trim().toLowerCase()] = id.toString();
+                localStorage.setItem(SELLER_CACHE_KEY, JSON.stringify(c));
+            },
+            all: function() { return sellerCache(true); }
+        };
+    }
+
+    function getHistory() {
+        try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); }
+        catch(e){ return []; }
+    }
+    function getPins() {
+        try { return JSON.parse(localStorage.getItem(HISTORY_PINS_KEY) || '[]'); }
+        catch(e){ return []; }
+    }
+    function setHistory(arr) {
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(arr.slice(0,25)));
+    }
+    function setPins(arr) {
+        localStorage.setItem(HISTORY_PINS_KEY, JSON.stringify(arr.slice(0,8)));
+    }
+    function addToHistory(item) {
+        let arr = getHistory();
+        if (arr.length && arr[0].type === item.type && arr[0].value === item.value) return;
+        arr.unshift(item);
+        setHistory(arr);
+        renderHistory();
+    }
+    function addToPins(item) {
+        let arr = getPins();
+        if (arr.some(x=>x.value===item.value)) return;
+        arr.unshift(item);
+        setPins(arr);
+        renderHistory();
+    }
+    function removeFromHistory(idx) {
+        let arr = getHistory();
+        arr.splice(idx,1);
+        setHistory(arr);
+        renderHistory();
+    }
+    function removeFromPins(idx) {
+        let arr = getPins();
+        arr.splice(idx,1);
+        setPins(arr);
+        renderHistory();
+    }
+    function unpin(idx) {
+        let arr = getPins();
+        let item = arr[idx];
+        arr.splice(idx,1);
+        setPins(arr);
+        addToHistory(item);
+        renderHistory();
+    }
+    function pinHistory(idx) {
+        let arr = getHistory();
+        let item = arr[idx];
+        removeFromHistory(idx);
+        addToPins(item);
+    }
+
+    function log(msg) {
+        setMsg(msg, true);
+        console.log(`[DS-QUICK-JUMP-HIST] ${msg}`);
+    }
+
+    let showHistory = false;
+    function renderHistory() {
+        let sec = document.getElementById('vibe-history-section');
+        if (!sec) return;
+        sec.className = 'vibe-history-section' + (showHistory ? '' : ' hide');
+        // Pins
+        let pins = getPins();
+        let pinList = document.getElementById('vibe-history-pins');
+        if (pinList) {
+            pinList.innerHTML = pins.length
+                ? pins.map((item, i) =>
+                    `<li class="vibe-history-pin" data-pindex="${i}" title="${item.desc||item.value}">
+                        <span>${item.desc||item.value}</span>
+                        <div class="vibe-hist-action">
+                            <span class="vibe-unpin" title="Открепить">📌</span>
+                            <span class="vibe-remove" title="Удалить">✖</span>
+                        </div>
+                    </li>`
+                  ).join('')
+                : `<li style="color:#666;font-size:14px;">(Нет закрепов)</li>`;
+        }
+        // История + кнопка очистки
+        let hist = getHistory();
+        let hList = document.getElementById('vibe-history-list');
+        if (hList) {
+            hList.innerHTML = hist.length
+                ? hist.map((item, i) =>
+                    `<li class="vibe-history-item" data-hindex="${i}" title="${item.desc||item.value}">
+                        <span>${item.desc||item.value}</span>
+                        <div class="vibe-hist-action">
+                            <span class="vibe-pin" title="Закрепить">📌</span>
+                            <span class="vibe-remove" title="Удалить">✖</span>
+                        </div>
+                    </li>`
+                ).join('')
+                : `<li style="color:#666;font-size:14px;">(История пуста)</li>`;
+        }
+    }
+
+    function createPanel() {
+        let old = document.getElementById('vibe-quickpanel');
+        if (old) {
+            old.classList.add('vibe-hide');
+            setTimeout(()=>old.remove(), 320);
+        }
+
+        let panel = document.createElement('div');
+        panel.id = 'vibe-quickpanel';
+        panel.innerHTML = `
+          <div id="vibe-history-section" class="vibe-history-section hide">
+            <div class="vibe-history-title">Закреплённые</div>
+            <ul id="vibe-history-pins"></ul>
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+                <div class="vibe-history-title">История</div>
+                <button id="vibe-clear-history-btn" title="Удалить всю историю" style="margin-left:auto;font-size:13px;background:#2e2420;color:#ffe37e;border:1px solid #dca11c;border-radius:7px;padding:2px 11px;cursor:pointer;transition:.13s;">🗑 Удалить</button>
+            </div>
+            <ul id="vibe-history-list"></ul>
+          </div>
+          <div id="vibe-quickpanel-header-row">
+            <div id="vibe-quickpanel-title">Banana GO</div>
+            <button id="vibe-history-btn" title="История">🦍</button>
+          </div>
+          <div id="vibe-jump-input-group">
+            <input id="vibe-jump-input" type="text" placeholder="Перейти к..." autocomplete="off" />
+            <button id="vibe-jump-search-btn" title="Перейти" class="ds-glow-btn">
+              <svg width="22" height="22" viewBox="0 0 20 20"><circle cx="8.5" cy="8.5" r="7" stroke="gold" stroke-width="2" fill="none"/><line x1="15" y1="15" x2="11.7" y2="11.7" stroke="gold" stroke-width="2" stroke-linecap="round"/></svg>
+            </button>
+          </div>
+          <div id="vibe-jump-msg"></div>
+          <div id="vibe-quickpanel-close" title="Свернуть">✕</div>
+        `;
+        document.body.appendChild(panel);
+
+        document.getElementById('vibe-quickpanel-close').onclick = collapsePanel;
+        document.getElementById('vibe-jump-search-btn').onclick = jumpAction;
+        document.getElementById('vibe-jump-input').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') jumpAction();
+        });
+        document.getElementById('vibe-jump-input').addEventListener('paste', function(e) {
+            setTimeout(jumpAction, 80);
+        });
+
+        // Кнопка-горилла (история)
+        let histBtn = document.getElementById('vibe-history-btn');
+        histBtn.onclick = function() {
+            showHistory = !showHistory;
+            renderHistory();
+        };
+
+        // --- История — события на списках
+        panel.addEventListener('click', function(e) {
+            let pinBtn = e.target.closest('.vibe-pin');
+            if (pinBtn) {
+                let li = pinBtn.closest('.vibe-history-item');
+                if (li) pinHistory(Number(li.dataset.hindex));
+            }
+            let unpinBtn = e.target.closest('.vibe-unpin');
+            if (unpinBtn) {
+                let li = unpinBtn.closest('.vibe-history-pin');
+                if (li) unpin(Number(li.dataset.pindex));
+            }
+            let rmBtn = e.target.closest('.vibe-remove');
+            if (rmBtn) {
+                let liH = rmBtn.closest('.vibe-history-item');
+                if (liH) removeFromHistory(Number(liH.dataset.hindex));
+                let liP = rmBtn.closest('.vibe-history-pin');
+                if (liP) removeFromPins(Number(liP.dataset.pindex));
+            }
+            let item = e.target.closest('.vibe-history-item');
+            if (item && !e.target.classList.contains('vibe-pin') && !e.target.classList.contains('vibe-remove')) {
+                doHistoryAction(getHistory()[Number(item.dataset.hindex)]);
+            }
+            let pin = e.target.closest('.vibe-history-pin');
+            if (pin && !e.target.classList.contains('vibe-unpin') && !e.target.classList.contains('vibe-remove')) {
+                doHistoryAction(getPins()[Number(pin.dataset.pindex)]);
+            }
+        });
+
+        let msg = localStorage.getItem(STORAGE_KEY+'_msg');
+        if (msg) setMsg(msg, true);
+
+        setTimeout(() => {
+            let input = document.getElementById('vibe-jump-input');
+            if (input) input.focus();
+        }, 100);
+
+        setTimeout(() => {
+            let btn = document.getElementById('vibe-clear-history-btn');
+            if (btn) {
+                btn.onclick = function() {
+                    setHistory([]);
+                    renderHistory();
+                };
+            }
+        }, 120);
+
+        renderHistory();
+    }
+
+    function collapsePanel() {
+        let panel = document.getElementById('vibe-quickpanel');
+        if (panel) {
+            panel.classList.add('vibe-hide');
+            setTimeout(()=>panel.remove(), 320);
+        }
+
+        let btn = document.createElement('div');
+        btn.id = 'vibe-quickpanel-collapsed';
+        btn.title = "Развернуть быстрый переход";
+        btn.innerHTML = '🍌';
+        btn.classList.add('vibe-hide');
+        setTimeout(()=>{
+            btn.classList.remove('vibe-hide');
+        }, 20);
+        btn.onclick = function() {
+            btn.classList.add('vibe-hide');
+            setTimeout(()=>{
+                btn.remove();
+                createPanel();
+            }, 270);
+        };
+        document.body.appendChild(btn);
+    }
+    function uncollapsePanelIfAny() {
+        let btn = document.getElementById('vibe-quickpanel-collapsed');
+        if (btn) {
+            btn.classList.add('vibe-hide');
+            setTimeout(()=>{
+                btn.remove();
+                createPanel();
+            }, 270);
+        }
+    }
+
+    function setMsg(text, save = false) {
+        let m = document.getElementById('vibe-jump-msg');
+        if (!m) return;
+        if (typeof text === "string" && text.startsWith("BANANA!!!")) {
+            m.innerHTML = text;
+        } else {
+            m.textContent = text;
+        }
+        if (save) localStorage.setItem(STORAGE_KEY+'_msg', text || '');
+    }
+    function playBananaEasterEgg() {
+        const monkeySound = "https://assets.mixkit.co/active_storage/sfx/106/106-preview.mp3";
+        let audio = new Audio(monkeySound);
+        audio.volume = 0.7;
+        audio.play();
+    }
+
+    function tryExtractSellerIdFromPage(nick) {
+        let sellerLinks = Array.from(document.querySelectorAll('a[href*="/sellers/"]'));
+        for (let link of sellerLinks) {
+            let href = link.getAttribute('href');
+            let idMatch = href && href.match(/sellers\/(\d+)/);
+            if (idMatch) {
+                let linkNick = link.textContent.trim().toLowerCase();
+                if (!nick || (linkNick === nick.trim().toLowerCase())) {
+                    return idMatch[1];
+                }
+            }
+        }
+        return null;
+    }
+
+    function doHistoryAction(item) {
+        if (!item) return;
+        if (item.type === 'orders') {
+            goToOrders(extractOrderNumbers(item.value));
+        } else if (item.type === 'seller' && item.sellerId) {
+            window.location.href = `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${item.sellerId}`;
+        } else if (item.type === 'nick') {
+            let cache = sellerCache();
+            let sellerId = cache.get(item.value);
+            if (sellerId) {
+                window.location.href = `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${sellerId}`;
+            } else {
+                localStorage.setItem(STORAGE_KEY+'_pending_seller', item.value);
+                window.location.href = `https://my.digiseller.ru/asp/search.asp?txt_NameSeller=${encodeURIComponent(item.value)}`;
+            }
+        } else if (item.type === 'ggsel') {
+            window.location.href = item.value + (item.value.includes('?') ? '&' : '?') + 'extract_seller_from_hist=1';
+        }
+    }
+
+    function clearInput() {
+        let input = document.getElementById('vibe-jump-input');
+        if (input) {
+            input.value = '';
+            input.focus();
+        }
+    }
+
+    function isEmail(str) {
+        // Универсальный детектор email любого домена
+        return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(str.trim());
+    }
+
+    function jumpAction() {
+        let input = document.getElementById('vibe-jump-input');
+        if (!input) return;
+        let value = input.value.trim();
+
+        // --- Banana easter egg ---
+        if (/б\s*а\s*н\s*а\s*н\s*а/i.test(value.replace(/\s+/g, ''))) {
+            playBananaEasterEgg();
+            setMsg('BANANA!!! <img src="https://www.emojiall.com/images/240/telegram/1f98d.gif" style="height:200px;margin:0 3px;vertical-align:middle;">'.repeat(9), true);
+            clearInput();
+            return;
+        }
+        if (!value) {
+            log("Введите номер заказа или ник продавца");
+            clearInput();
+            return;
+        }
+
+        // --- Поиск по email покупателя ---
+        if (isEmail(value)) {
+            log('Переходим к покупателю по email…');
+            window.location.href = `https://my.digiseller.ru/asp/goods_of_buyer.asp?Email=${encodeURIComponent(value)}`;
+            clearInput();
+            return;
+        }
+
+        // --- Проверяем GGSEL ссылку любого типа (обычный и /en) ---
+        const ggselProductReg = /^https:\/\/ggsel\.net\/(en\/)?catalog\/product\/\d+/i;
+        if (ggselProductReg.test(value)) {
+            log('Переходим на товар, чтобы вытащить seller id...');
+            addToHistory({type:'ggsel', value:value, desc:"GGSEL товар"});
+            window.location.href = value + (value.includes('?') ? '&' : '?') + 'extract_seller=1';
+            clearInput();
+            return;
+        }
+
+        let cache = sellerCache();
+        let sellerId = cache.get(value);
+        if (sellerId) {
+            log(`Найден в кеше! Сразу к сообщениям!`);
+            addToHistory({type:'seller', value:value, sellerId, desc:`Продавец ${value}`});
+            localStorage.removeItem(STORAGE_KEY+'_pending_seller');
+            localStorage.removeItem(STORAGE_KEY+'_msg');
+            setTimeout(function() {
+                window.location.href = `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${sellerId}`;
+            }, 250);
+            clearInput();
+            return;
+        }
+
+        // Только полностью цифровые значения без букв - как номера заказов!
+        let orders = extractOrderNumbers(value)
+            .map(x => x.replace(/[^\d]/g, ''))
+            .filter(x => x.length >= 3 && /^\d+$/.test(x));
+        if (orders.length > 0 && orders.every(x => x.length >= 3 && /^\d+$/.test(x))) {
+            goToOrders(orders);
+            localStorage.removeItem(STORAGE_KEY);
+            localStorage.removeItem(STORAGE_KEY+'_pending_seller');
+            localStorage.removeItem(STORAGE_KEY+'_msg');
+            clearInput();
+            return;
+        }
+
+        let pageSellerId = tryExtractSellerIdFromPage(value);
+        if (pageSellerId) {
+            log(`Нашли ID продавца на странице: ${pageSellerId} — кешируем и переходим!`);
+            addToHistory({type:'seller', value:value, sellerId:pageSellerId, desc:`Продавец ${value}`});
+            sellerCache().set(value, pageSellerId);
+            setTimeout(function() {
+                window.location.href = `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${pageSellerId}`;
+            }, 300);
+            clearInput();
+            return;
+        }
+
+        log("Ищем продавца…");
+        addToHistory({type:'nick', value:value, desc:`Продавец ${value}`});
+        localStorage.setItem(STORAGE_KEY+'_pending_seller', value);
+        localStorage.removeItem(STORAGE_KEY+'_msg');
+        window.location.href = `https://my.digiseller.ru/asp/search.asp?txt_NameSeller=${encodeURIComponent(value)}`;
+        clearInput();
+    }
+
+    function checkAndJumpToSellerMsg() {
+        let pendingSeller = localStorage.getItem(STORAGE_KEY+'_pending_seller');
+        if (!pendingSeller) return;
+
+        let maxWait = 7000;
+        let startedAt = Date.now();
+
+        function tryJump(step) {
+            let input = document.querySelector('input[name="ID_S"]');
+            if (input && input.value && /^\d+$/.test(input.value)) {
+                log(`Нашли ID продавца: ${input.value} — кешируем и переходим на сообщения...`);
+                addToHistory({type:'seller', value:pendingSeller, sellerId:input.value, desc:`Продавец ${pendingSeller}`});
+                sellerCache().set(pendingSeller, input.value);
+                localStorage.setItem(STORAGE_KEY+'_seller_id', input.value);
+                localStorage.removeItem(STORAGE_KEY+'_pending_seller');
+                localStorage.removeItem(STORAGE_KEY+'_msg');
+                setTimeout(function() {
+                    window.location.href = `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${input.value}`;
+                }, 350);
+            } else {
+                if (Date.now() - startedAt > maxWait) {
+                    log(`Ошибка! Не найден ID продавца для ника "${pendingSeller}" за ${(Date.now()-startedAt)/1000} сек.`);
+                    localStorage.removeItem(STORAGE_KEY+'_pending_seller');
+                    return;
+                }
+                setTimeout(function() { tryJump((step||1)+1); }, 350);
+            }
+        }
+        tryJump(1);
+    }
+
+    createPanel();
+    setTimeout(uncollapsePanelIfAny, 500);
+    checkAndJumpToSellerMsg();
+
+})();
