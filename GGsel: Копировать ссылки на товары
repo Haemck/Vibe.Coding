@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GGsel: Копировать ссылки на товары
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.2
 // @description  Кнопка для копирования всех ссылок на товары со страницы поиска ggsel.net
 // @author       vibe.coding
 // @match        https://ggsel.net/search*
