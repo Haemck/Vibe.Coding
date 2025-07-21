@@ -1,46 +1,55 @@
 // ==UserScript==
-// @name         Digiseller: Banana GO + Кастомные закладки + GGSEL автоназвания + Popup редактирование
+// @name         Digiseller: Banana GO
 // @namespace    http://tampermonkey.net/
-// @version      4.1
-// @description  Быстрый переход + история/закрепы/закладки, стиль поиска vibe, popup-редактирование, автоназвание GGSEL 🦍🍌
+// @version      4.4
+// @description  Быстрый переход + история/закрепы/закладки, стиль поиска vibe, пасхалка! Обрезка длинных названий троеточием 🦍🍌, грид-выбор продавца, статичный стиль кнопок продавцов, восстановление состояния панели, история поиска по email.
 // @author       vibe.coding
 // @match        https://my.digiseller.ru/*
 // @match        https://ggsel.net/*
+// @match        https://ggsel.net/catalog/product/*
 // @run-at       document-end
 // @grant        none
 // ==/UserScript==
 
 (function() {
     'use strict';
+// === Banana 🦍🍌 Product Seller Redirect v5 ===
+if (
+  window.location.hostname.includes('ggsel.net') &&
+  /^\/catalog\/product\/\d+/.test(window.location.pathname) &&
+  (
+    window.location.search.includes('exec=1') ||
+    window.location.search.includes('extract_seller_from_hist=1')
+  )
+) {
+
+  function tryRedirectToSellerBanana(attempt = 1) {
+    // Универсальный селектор: ищем seller по data-test или просто по href
+    let link =
+      document.querySelector('a[data-test="sellerName"][href^="/sellers/"]') ||
+      document.querySelector('a[href^="/sellers/"]');
+    let m = link && link.getAttribute('href').match(/\/sellers\/(\d+)/);
+    if (m && m[1]) {
+      // Банановый моментальный переход!
+      window.location.href = `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${m[1]}`;
+    } else {
+      if (attempt < 7) {
+        setTimeout(() => tryRedirectToSellerBanana(attempt + 1), 300 + attempt * 180);
+      } else {
+        console.log("🦍🍌 [Banana GO] Не удалось найти продавца на странице товара!");
+      }
+    }
+  }
+  setTimeout(() => tryRedirectToSellerBanana(), 600);
+  return; // Всё, дальше скрипт не выполняется на этой странице
+}
+
 
     const isGgsel = window.location.hostname.includes('ggsel.net');
+    const PANEL_STATE_KEY = 'vibe-panel-state';
 
-    if (
-        isGgsel &&
-        /^(\/(en\/)?catalog\/product\/\d+)/.test(window.location.pathname) &&
-        (
-            window.location.search.includes("extract_seller=1") ||
-            window.location.search.includes("extract_seller_from_hist=1")
-        )
-    ) {
-        let sellerLinks = Array.from(document.querySelectorAll('a[href*="/sellers/"]'));
-        let sellerId = null;
-        for (let link of sellerLinks) {
-            let href = link.getAttribute('href');
-            let idMatch = href && href.match(/sellers\/(\d+)/);
-            if (idMatch) {
-                sellerId = idMatch[1];
-                break;
-            }
-        }
-        if (sellerId) {
-            localStorage.setItem('banana_seller_id', sellerId);
-            window.location.href = "https://my.digiseller.ru/asp/seller_messages.asp?id_s=" + sellerId;
-        }
-        return;
-    }
 
-    if (isGgsel) return;
+   ///// if (isGgsel) return;
 
     // --- CSS ---
     const vibeCSS = `
@@ -71,11 +80,11 @@
 #vibe-quickpanel-collapsed:hover { filter: brightness(1.15);}
 #vibe-quickpanel-close {
     position: absolute; top: 14px; right: 14px; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
-    background: rgba(38,38,42,0.87); border-radius: 50%; border: 2px solid #ffe37e; color: #ffe37e;
+    background: rgba(38,38,42,0.87); border-radius: 25%; border: 2px solid gold; color: gold;
     font-size: 22px; font-weight: bold; cursor: pointer; opacity: 0.88; z-index:10; transition: background .15s, opacity .15s, box-shadow .15s;
     box-shadow: 0 3px 14px #0005;
 }
-#vibe-quickpanel-close:hover { opacity: 1; background: #212227; box-shadow: 0 6px 26px #0008;}
+#vibe-quickpanel-close:hover { opacity: 1; background: #2c2f38; box-shadow: 0 6px 26px #0008;}
 #vibe-quickpanel-header-row { display: flex; align-items: center; width: 100%; margin-bottom: 8px; margin-top: 0; }
 #vibe-quickpanel-title { font-size: 19px; font-weight: bold; color: gold; flex: none; letter-spacing:.02em; margin-right: 4px; display:flex; align-items:center; gap:2px;}
 #vibe-header-group { display:flex; align-items:center; gap:2px; flex:1 0 auto;}
@@ -86,7 +95,21 @@
 .vibe-history-section { width:100%; margin-bottom:14px; transition: max-height .24s cubic-bezier(.4,0,.2,1), opacity .19s; overflow:hidden; max-height:600px; opacity:1;}
 .vibe-history-section.hide { max-height:0; opacity:0; pointer-events:none;}
 .vibe-history-title { margin-top:2px; color:gold;font-size:15px;margin-bottom:2px;font-weight:600;letter-spacing:.04em;display:flex;align-items:center;gap:3px;}
-#vibe-history-list, #vibe-history-pins { width:100%;margin-top:0;margin-bottom:0;padding-left:0;list-style:none;}
+#vibe-history-list {
+    width: 100%;
+    margin-top: 0;
+    margin-bottom: 0;
+    padding-left: 0;
+    list-style: none;
+    max-height: 420px;
+    overflow-y: auto;
+    scrollbar-width: thin;           /* Узкая полоса прокрутки */
+    scrollbar-color: gold #23272b;   /* Цвет полосы — gold, фон — тёмный */
+    padding-right: 12px;             /* Сдвигаем текст, чтобы полоса не закрывала */
+}
+
+
+#vibe-history-pins { width:100%;margin-top:0;margin-bottom:0;padding-left:0;list-style:none;}
 .vibe-history-item, .vibe-history-pin { display:flex;align-items:center;gap:8px;margin:0 0 2px 0;padding:4px 0 4px 0;border-bottom:1px solid #3332; font-size:15px;color:#ffe37e;cursor:pointer;border-radius:5px;transition:background .14s;}
 .vibe-history-item:hover, .vibe-history-pin:hover { background:#24262d;}
 .vibe-hist-action { margin-left:auto;display:flex;align-items:center;gap:7px;}
@@ -97,48 +120,143 @@
 .vibe-edit { font-size:15px;color:#ffe37e;cursor:pointer;opacity:.7;padding:1px 4px;transition:opacity .14s;}
 .vibe-edit:hover { opacity:1; color: #f5eb70;}
 #vibe-jump-input-group { display: flex; width: 100%; align-items: center; margin-bottom:0;}
-#vibe-jump-input { font-size: 17px; padding: 8px 14px 8px 12px; border-radius: 8px; border: 1.3px solid #ffe37e; outline: none; width: 90%; background: #25272e; color: #ffe37e; font-family: inherit; margin-right: 0; transition: box-shadow .14s;}
+#vibe-jump-input { font-size: 17px; padding: 8px 14px 8px 12px; border-radius: 8px; border: 1.3px solid #ffe37e; outline: none; width: 90%; background: #25272e; color: #ffe37e; font-family: inherit; margin-right: 0; transition: box-shadow .14s; resize: vertical; min-height: 39px; max-height: 148px;}
 #vibe-jump-input:focus { box-shadow: 0 0 0 2px gold; }
 #vibe-jump-search-btn, #vibe-jump-search-btn:hover, #vibe-jump-search-btn:focus { box-shadow: none !important; filter: none !important; outline: none !important; background: none;}
 #vibe-jump-search-btn svg, #vibe-jump-search-btn:hover svg { filter: none !important; box-shadow: none !important;}
 #vibe-jump-search-btn { margin-left: 5px; padding: 8px 10px 8px 12px; color: gold; font-size: 21px; border-radius: 8px; transition: background .15s; border: none; cursor: pointer;}
 #vibe-jump-search-btn:hover { background: #2c2f38; }
-#vibe-jump-msg { margin-top: 8px; font-size: 15px; color: #b8f68b; min-height: 20px; white-space: pre-line;}
-/* Popup */
-#vibe-edit-popup {
-    position: absolute; left: 50%; top: 70px; transform: translateX(-50%);
-    background: #23222d; color: #ffe37e; border: 2px solid gold; border-radius: 13px;
-    box-shadow: 0 4px 30px #000c, 0 1.5px 5px #0007;
-    padding: 17px 22px 12px 22px; z-index: 999999999;
-    min-width: 245px; max-width: 380px;
-    display: flex; flex-direction: column; align-items: stretch;
+/* ======= ellipsis/ограничение ширины ======= */
+.vibe-history-item span,
+.vibe-history-pin span {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    max-width: 320px;
+    display: inline-block;
+    vertical-align: middle;
 }
-#vibe-edit-popup input {
-    font-size: 16px; padding: 7px 10px; border-radius: 7px;
-    border: 1.2px solid #ffe37e; background: #24272e; color: #ffe37e;
-    margin-bottom: 11px; outline: none;
+/* ==== Кнопки выбора продавца ==== */
+#vibe-seller-choose-list {
+    margin: 18px 0 7px 0;
+    width: 100%;
+    padding: 0;
 }
-#vibe-edit-popup button {
-    background: #232a1a; color: #ffe37e; border: 1px solid #cafc98;
-    border-radius: 8px; font-size: 15px; padding: 5px 13px;
-    margin-right: 8px; cursor: pointer;
-    transition: background 0.13s;
+.vibe-seller-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0 24px;
+    align-items: start;
 }
-#vibe-edit-popup button:hover { background: #323e23; }
-#vibe-edit-popup .vibe-edit-popup-btns {
-    display: flex; flex-direction: row; justify-content: flex-end; align-items: center;
+.vibe-seller-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+.vibe-seller-link {
+    color: #77fcab;
+    background: none;
+    border: none;
+    padding: 3.5px 0 3.5px 0;
+    margin: 0;
+    text-align: left;
+    width: 100%;
+    font-family: inherit;
+    font-size: 17px;
+    line-height: 1.37;
+    border-radius: 7px;
+    cursor: pointer;
+    transition: background 0.12s, color 0.11s;
+    box-shadow: none;
+    outline: none;
+    font-weight: 400;
+    letter-spacing: 0.01em;
+    text-shadow: none;
+    display: block;
+}
+.vibe-seller-link:hover, .vibe-seller-link:focus {
+    background: #2e412e;
+    color: #ffe37e;
+}
+/* --- Модальное окно для редактирования закрепа --- */
+.vibe-edit-modal-bg {
+    position: fixed;
+    left: 0; top: 0; width: 100vw; height: 100vh;
+    background: rgba(14,17,23,0.38);
+    z-index: 999999999;
+    display: flex; align-items: flex-start; justify-content: center;
+}
+.vibe-edit-modal {
+    margin-top: 90px;
+    background: #24262d;
+    border: 2px solid gold;
+    border-radius: 18px;
+    box-shadow: 0 8px 38px #000b;
+    padding: 28px 26px 20px 26px;
+    min-width: 320px;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    animation: vibeFadeIn .23s;
+}
+@keyframes vibeFadeIn { from { opacity: 0; transform: translateY(-24px);} to { opacity: 1; transform: none;}}
+.vibe-edit-modal input {
+    background: #181820;
+    border: 1.5px solid #ffe37e;
+    border-radius: 8px;
+    color: #ffe37e;
+    font-size: 17px;
+    padding: 8px 13px;
+    margin-bottom: 12px;
+    outline: none;
+}
+@keyframes vibeGrowIn {
+    from {
+        opacity: 0;
+        transform: scale(0.6) translate(90px, 90px);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1) translate(0, 0);
+    }
+}
+.vibe-edit-modal button {
+    background: #ffe37e;
+    color: #24262d;
+    font-weight: 600;
+    border-radius: 8px;
+    border: none;
+    font-size: 15px;
+    padding: 8px 14px;
+    margin-right: 7px;
+    cursor: pointer;
+    transition: background .14s;
+}
+.vibe-edit-modal button:hover {
+    background: gold;
+}
+.vibe-edit-modal .vibe-cancel {
+    background: #44444a;
+    color: #ffe37e;
+    margin-right: 0;
+}
+.vibe-clear-history-btn {
+    margin-right:150px;
+    font-size:13px;
+    background:rgba(28,32,44,0.98);
+    color:#ffe37e;
+    border:1px solid gold;
+    border-radius:7px;
+    padding:2px 11px;
+    cursor:pointer;
+    transition:.13s;
+}
+.vibe-clear-history-btn:hover {
+    background: #2c2f38 !important;
+    color: gold !important;
+    border-color: gold !important;
 }
 `;
-
-    // Добавим экранирование для безопасности в отрисовке
-    function escapeHtml(text) {
-        if (!text) return '';
-        return text.replace(/[&<>"']/g, function (m) {
-            return ({
-                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-            })[m];
-        });
-    }
 
     if (!document.getElementById('vibe-css')) {
         let style = document.createElement('style');
@@ -152,348 +270,446 @@
     const HISTORY_KEY = 'vibe-jump-history';
     const HISTORY_PINS_KEY = 'vibe-jump-pins';
 
-    // --- Custom Bookmarks
-    function getNextCustomBookmarkName() {
-        let pins = getPins();
-        let base = "Кастомная закладка";
-        let nums = pins
-            .filter(x=>x.type === "bookmark" && x.desc && x.desc.startsWith(base))
-            .map(x=>{
-                let m = x.desc.match(/^Кастомная закладка\s*(\d*)/);
-                return m && m[1] ? parseInt(m[1],10) : null;
-            }).filter(x=>x);
-        let n = 1;
-        while (nums.includes(n)) n++;
-        return base + ' ' + n;
-    }
-    function addCustomBookmark() {
-        const url = window.location.href;
-        const desc = getNextCustomBookmarkName();
-        addToPins({ type: 'bookmark', value: url, desc: desc });
-        renderHistory();
-    }
+    // Остальные функции пойдут в следующем сообщении...
+function getNextCustomBookmarkName() {
+    let pins = getPins();
+    let base = "Кастомная закладка";
+    let nums = pins
+        .filter(x=>x.type === "bookmark" && x.desc && x.desc.startsWith(base))
+        .map(x=>{
+            let m = x.desc.match(/^Кастомная закладка\s*(\d*)/);
+            return m && m[1] ? parseInt(m[1],10) : null;
+        }).filter(x=>x);
+    let n = 1;
+    while (nums.includes(n)) n++;
+    return base + ' ' + n;
+}
 
-    function extractOrderNumbers(val) {
-        return val.replace(/[\s,;]+/g, ',').split(',');
-    }
-    function goToOrders(orderIds) {
-        const validIds = orderIds.slice().reverse().map(x => x.replace(/[^\d]/g, '')).filter(x => x.length >= 3);
+function addCustomBookmark() {
+    const url = window.location.href;
+    const desc = getNextCustomBookmarkName();
+    addToPins({ type: 'bookmark', value: url, desc: desc });
+    renderHistory();
+}
+
+function extractOrderNumbers(val) {
+    return val.replace(/[\s,;]+/g, ',').split(',');
+}
+
+function goToOrders(orderIds) {
+    const validIds = orderIds.slice().reverse().map(x => x.replace(/[^\d]/g, '')).filter(x => x.length >= 3);
+    if (validIds.length === 1) {
+        window.location.href = `https://my.digiseller.ru/asp/inv_of_buyer.asp?id_i=${validIds[0]}`;
+    } else {
         validIds.forEach(orderId => {
             window.open(`https://my.digiseller.ru/asp/inv_of_buyer.asp?id_i=${orderId}`, '_blank');
         });
-        setMsg('Открыто заказов: ' + validIds.length, true);
-        addToHistory({type:'orders', value: orderIds.join(', '), desc: 'Заказы: ' + validIds.join(', ')});
     }
-    function sellerCache(loadOnly) {
-        let cache;
-        try { cache = JSON.parse(localStorage.getItem(SELLER_CACHE_KEY) || '{}'); }
-        catch(e) { cache = {}; }
-        if (loadOnly) return cache;
-        return {
-            get: function(nick) {
-                if (!nick) return null;
-                let c = sellerCache(true);
-                return c[nick.trim().toLowerCase()] || null;
-            },
-            set: function(nick, id) {
-                if (!nick || !id) return;
-                let c = sellerCache(true);
-                c[nick.trim().toLowerCase()] = id.toString();
-                localStorage.setItem(SELLER_CACHE_KEY, JSON.stringify(c));
-            },
-            all: function() { return sellerCache(true); }
-        };
-    }
+    setMsg('Открыто заказов: ' + validIds.length, true);
+    addToHistory({type:'orders', value: orderIds.join(', '), desc: 'Заказы: ' + validIds.join(', ')});
+}
 
-    function getHistory() {
-        try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); }
-        catch(e){ return []; }
-    }
-    function getPins() {
-        try { return JSON.parse(localStorage.getItem(HISTORY_PINS_KEY) || '[]'); }
-        catch(e){ return []; }
-    }
-    function setHistory(arr) {
-        localStorage.setItem(HISTORY_KEY, JSON.stringify(arr.slice(0,25)));
-    }
-    function setPins(arr) {
-        localStorage.setItem(HISTORY_PINS_KEY, JSON.stringify(arr.slice(0,8)));
-    }
-    function addToHistory(item) {
-        let arr = getHistory();
-        if (arr.length && arr[0].type === item.type && arr[0].value === item.value) return;
-        arr.unshift(item);
-        setHistory(arr);
-        renderHistory();
-    }
-    function addToPins(item) {
-        let arr = getPins();
-        if (arr.some(x=>x.value===item.value && x.type === item.type)) return;
-        arr.unshift(item);
-        setPins(arr);
-        renderHistory();
-    }
-    function removeFromHistory(idx) {
-        let arr = getHistory();
-        arr.splice(idx,1);
-        setHistory(arr);
-        renderHistory();
-    }
-    function removeFromPins(idx) {
-        let arr = getPins();
-        arr.splice(idx,1);
-        setPins(arr);
-        renderHistory();
-    }
-    function unpin(idx) {
-        let arr = getPins();
-        let item = arr[idx];
-        arr.splice(idx,1);
-        setPins(arr);
-        addToHistory(item);
-        renderHistory();
-    }
-    function pinHistory(idx) {
-        let arr = getHistory();
-        let item = arr[idx];
-        removeFromHistory(idx);
-        addToPins(item);
-    }
 
-    function log(msg) {
-        setMsg(msg, true);
-        console.log(`[DS-QUICK-JUMP-HIST] ${msg}`);
-    }
+function sellerCache(loadOnly) {
+    let cache;
+    try { cache = JSON.parse(localStorage.getItem(SELLER_CACHE_KEY) || '{}'); }
+    catch(e) { cache = {}; }
+    if (loadOnly) return cache;
+    return {
+        get: function(nick) {
+            if (!nick) return null;
+            let c = sellerCache(true);
+            return c[nick.trim().toLowerCase()] || null;
+        },
+        set: function(nick, id) {
+            if (!nick || !id) return;
+            let c = sellerCache(true);
+            c[nick.trim().toLowerCase()] = id.toString();
+            localStorage.setItem(SELLER_CACHE_KEY, JSON.stringify(c));
+        },
+        all: function() { return sellerCache(true); }
+    };
+}
 
-    let showHistory = false;
-    let editPopup = null;
+function getHistory() {
+    try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); }
+    catch(e){ return []; }
+}
 
-    function renderHistory() {
-        let sec = document.getElementById('vibe-history-section');
-        if (!sec) return;
-        sec.className = 'vibe-history-section' + (showHistory ? '' : ' hide');
-        // Pins
-        let pins = getPins();
-        let pinList = document.getElementById('vibe-history-pins');
-        if (pinList) {
-            pinList.innerHTML = pins.length
-                ? pins.map((item, i) =>
-                    `<li class="vibe-history-pin" data-pindex="${i}" title="${escapeHtml(item.desc||item.value)}">
-                        <span>${escapeHtml(item.desc||item.value)}</span>
-                        <div class="vibe-hist-action">
-                            <span class="vibe-edit" title="Переименовать">✏️</span>
-                            <span class="vibe-unpin" title="Открепить">📌</span>
-                            <span class="vibe-remove" title="Удалить">✖</span>
-                        </div>
-                    </li>`
-                  ).join('')
-                : `<li style="color:#666;font-size:14px;">(Нет закрепов)</li>`;
-        }
-        // --- Кнопка "Добавить кастомную закладку" ---
-        let titleBar = document.getElementById('vibe-pins-title-bar');
-        if (titleBar && !document.getElementById('vibe-add-bookmark-btn')) {
-            let starBtn = document.createElement('button');
-            starBtn.id = 'vibe-add-bookmark-btn';
-            starBtn.title = 'Добавить кастомную закладку';
-            starBtn.textContent = '⭐';
-            starBtn.style.cssText = 'margin-left:7px;font-size:19px;cursor:pointer;background:none;border:none;color:gold;transition:filter 0.15s;border-radius:7px;';
-            starBtn.onmouseover = () => starBtn.style.filter = 'brightness(1.5)';
-            starBtn.onmouseout  = () => starBtn.style.filter = '';
-            starBtn.onclick = addCustomBookmark;
-            titleBar.appendChild(starBtn);
-        }
-        // История + кнопка очистки
-        let hist = getHistory();
-        let hList = document.getElementById('vibe-history-list');
-        if (hList) {
-            hList.innerHTML = hist.length
-                ? hist.map((item, i) => {
-                    // Авто-переименование GGSEL товара (только если не было вручную)
-                    let desc = item.desc;
-                    if (
-                        item.type === "ggsel" &&
-                        /^https:\/\/ggsel\.net\/(en\/)?catalog\/product\/(\d+)/i.test(item.value) &&
-                        (!desc || desc === "GGSEL товар" || desc === item.value)
-                    ) {
-                        let m = item.value.match(/\/product\/(\d+)/i);
-                        if (m) desc = `Товар ${m[1]}`;
-                    }
-                    return `<li class="vibe-history-item" data-hindex="${i}" title="${escapeHtml(desc||item.value)}">
-                                <span>${escapeHtml(desc||item.value)}</span>
-                                <div class="vibe-hist-action">
-                                    <span class="vibe-pin" title="Закрепить">📌</span>
-                                    <span class="vibe-remove" title="Удалить">✖</span>
-                                </div>
-                            </li>`;
-                }).join('')
-                : `<li style="color:#666;font-size:14px;">(История пуста)</li>`;
-        }
-    }
+function getPins() {
+    try { return JSON.parse(localStorage.getItem(HISTORY_PINS_KEY) || '[]'); }
+    catch(e){ return []; }
+}
 
-    function createPanel() {
-        let old = document.getElementById('vibe-quickpanel');
-        if (old) {
-            old.classList.add('vibe-hide');
-            setTimeout(()=>old.remove(), 320);
-        }
+function setHistory(arr) {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(arr.slice(0,100)));
+}
 
-        let panel = document.createElement('div');
-        panel.id = 'vibe-quickpanel';
-        panel.innerHTML = `
-          <div id="vibe-history-section" class="vibe-history-section hide">
-            <div id="vibe-pins-title-bar" class="vibe-history-title">Закреплённые</div>
-            <ul id="vibe-history-pins"></ul>
-            <div style="display:flex;align-items:center;justify-content:space-between;">
-                <div class="vibe-history-title">История</div>
-                <button id="vibe-clear-history-btn" title="Удалить всю историю" style="margin-left:auto;font-size:13px;background:#2e2420;color:#ffe37e;border:1px solid #dca11c;border-radius:7px;padding:2px 11px;cursor:pointer;transition:.13s;">🗑 Удалить</button>
-            </div>
-            <ul id="vibe-history-list"></ul>
-          </div>
-          <div id="vibe-quickpanel-header-row">
-            <div id="vibe-quickpanel-title">Banana GO</div>
-            <button id="vibe-history-btn" title="История">🦍</button>
-          </div>
-          <div id="vibe-jump-input-group">
-            <input id="vibe-jump-input" type="text" placeholder="Перейти к..." autocomplete="off" />
-            <button id="vibe-jump-search-btn" title="Перейти" class="ds-glow-btn">
-              <svg width="22" height="22" viewBox="0 0 20 20"><circle cx="8.5" cy="8.5" r="7" stroke="gold" stroke-width="2" fill="none"/><line x1="15" y1="15" x2="11.7" y2="11.7" stroke="gold" stroke-width="2" stroke-linecap="round"/></svg>
-            </button>
-          </div>
-          <div id="vibe-jump-msg"></div>
-          <div id="vibe-quickpanel-close" title="Свернуть">✕</div>
-        `;
-        document.body.appendChild(panel);
+function setPins(arr) {
+    localStorage.setItem(HISTORY_PINS_KEY, JSON.stringify(arr.slice(0,8)));
+}
 
-        document.getElementById('vibe-quickpanel-close').onclick = collapsePanel;
-        document.getElementById('vibe-jump-search-btn').onclick = jumpAction;
-        document.getElementById('vibe-jump-input').addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') jumpAction();
-        });
-        document.getElementById('vibe-jump-input').addEventListener('paste', function(e) {
-            setTimeout(jumpAction, 80);
-        });
+function addToHistory(item) {
+    let arr = getHistory();
+    if (arr.length && arr[0].type === item.type && arr[0].value === item.value) return;
+    arr.unshift(item);
+    setHistory(arr);
+    renderHistory();
+}
 
-        // Кнопка-горилла (история)
-        let histBtn = document.getElementById('vibe-history-btn');
-        histBtn.onclick = function() {
-            showHistory = !showHistory;
+function addToPins(item) {
+    let arr = getPins();
+    if (arr.some(x=>x.value===item.value && x.type === item.type)) return;
+    arr.unshift(item);
+    setPins(arr);
+    renderHistory();
+}
+
+function removeFromHistory(idx) {
+    let arr = getHistory();
+    arr.splice(idx,1);
+    setHistory(arr);
+    renderHistory();
+}
+
+function removeFromPins(idx) {
+    let arr = getPins();
+    arr.splice(idx,1);
+    setPins(arr);
+    renderHistory();
+}
+
+function unpin(idx) {
+    let arr = getPins();
+    let item = arr[idx];
+    arr.splice(idx,1);
+    setPins(arr);
+    addToHistory(item);
+    renderHistory();
+}
+
+function pinHistory(idx) {
+    let arr = getHistory();
+    let item = arr[idx];
+    removeFromHistory(idx);
+    addToPins(item);
+    renderHistory();
+}
+
+function log(msg) {
+    setMsg(msg, true);
+    console.log(`[DS-QUICK-JUMP-HIST] ${msg}`);
+}
+
+let showHistory = false;
+let editModal = null;
+
+function showEditModal(idx, currentDesc) {
+    closeEditModal();
+    editModal = document.createElement('div');
+    editModal.className = 'vibe-edit-modal-bg';
+    editModal.innerHTML = `
+    <form class="vibe-edit-modal">
+        <label style="color:gold;font-weight:500;font-size:15px;margin-bottom:3px;">Новое имя закладки/закрепа:</label>
+        <input type="text" id="vibe-edit-modal-input" value="${escapeHtml(currentDesc||'')}" autocomplete="off" autofocus style="margin-bottom:14px;">
+        <div style="display:flex;gap:8px;justify-content:flex-end;">
+            <button type="submit" class="vibe-ok">Сохранить</button>
+            <button type="button" class="vibe-cancel">Отмена</button>
+        </div>
+    </form>
+    `;
+    document.body.appendChild(editModal);
+    setTimeout(()=>{ let inp = document.getElementById('vibe-edit-modal-input'); if (inp) inp.focus(); },50);
+    editModal.querySelector('form').onsubmit = function(e){
+        e.preventDefault();
+        let inp = document.getElementById('vibe-edit-modal-input');
+        if (inp && inp.value.trim()) {
+            let pins = getPins();
+            pins[idx].desc = inp.value.trim();
+            setPins(pins);
             renderHistory();
-        };
-
-        // --- История — события на списках (редакт popup)
-        panel.addEventListener('click', function(e) {
-            let editBtn = e.target.closest('.vibe-edit');
-            if (editBtn) {
-                let li = editBtn.closest('.vibe-history-pin');
-                if (li) {
-                    let pins = getPins();
-                    let i = Number(li.dataset.pindex);
-                    let current = pins[i];
-                    openEditPopup(current.desc || current.value, function(newName) {
-                        pins[i].desc = newName.trim();
-                        setPins(pins);
-                        renderHistory();
-                    });
-                }
-                return;
-            }
-            let pinBtn = e.target.closest('.vibe-pin');
-            if (pinBtn) {
-                let li = pinBtn.closest('.vibe-history-item');
-                if (li) pinHistory(Number(li.dataset.hindex));
-                return;
-            }
-            let unpinBtn = e.target.closest('.vibe-unpin');
-            if (unpinBtn) {
-                let li = unpinBtn.closest('.vibe-history-pin');
-                if (li) unpin(Number(li.dataset.pindex));
-                return;
-            }
-            let rmBtn = e.target.closest('.vibe-remove');
-            if (rmBtn) {
-                let liH = rmBtn.closest('.vibe-history-item');
-                if (liH) removeFromHistory(Number(liH.dataset.hindex));
-                let liP = rmBtn.closest('.vibe-history-pin');
-                if (liP) removeFromPins(Number(liP.dataset.pindex));
-                return;
-            }
-            let item = e.target.closest('.vibe-history-item');
-            if (item && !e.target.classList.contains('vibe-pin') && !e.target.classList.contains('vibe-remove')) {
-                doHistoryAction(getHistory()[Number(item.dataset.hindex)]);
-                return;
-            }
-            let pin = e.target.closest('.vibe-history-pin');
-            if (pin && !e.target.classList.contains('vibe-unpin') && !e.target.classList.contains('vibe-remove') && !e.target.classList.contains('vibe-edit')) {
-                doHistoryAction(getPins()[Number(pin.dataset.pindex)]);
-                return;
-            }
+            closeEditModal();
+        }
+    };
+    editModal.querySelector('.vibe-cancel').onclick = closeEditModal;
+    setTimeout(()=>{
+        editModal.addEventListener('keydown', function(e){
+            if(e.key === 'Escape') closeEditModal();
         });
+    },50);
+    editModal.addEventListener('mousedown', function(e){
+        if(e.target === editModal) closeEditModal();
+    });
+}
 
-        let msg = localStorage.getItem(STORAGE_KEY+'_msg');
-        if (msg) setMsg(msg, true);
+function closeEditModal() {
+    if(editModal) {
+        editModal.remove();
+        editModal = null;
+    }
+}
 
+function escapeHtml(text) {
+    return (text||"").replace(/[<>&"]/g, function(ch) {
+        return ({
+            '<':'&lt;',
+            '>':'&gt;',
+            '&':'&amp;',
+            '"':'&quot;'
+        })[ch] || ch;
+    });
+}
+
+function renderHistory() {
+    let sec = document.getElementById('vibe-history-section');
+    if (!sec) return;
+    sec.className = 'vibe-history-section' + (showHistory ? '' : ' hide');
+    let pins = getPins();
+    let pinList = document.getElementById('vibe-history-pins');
+    if (pinList) {
+        pinList.innerHTML = pins.length
+            ? pins.map((item, i) =>
+                `<li class="vibe-history-pin" data-pindex="${i}" title="${item.desc||item.value}">
+                    <span>${item.desc||item.value}</span>
+                    <div class="vibe-hist-action">
+                        <span class="vibe-edit" title="Переименовать">✏️</span>
+                        <span class="vibe-unpin" title="Открепить">📌</span>
+                        <span class="vibe-remove" title="Удалить">✖</span>
+                    </div>
+                </li>`
+              ).join('')
+            : `<li style="color:#666;font-size:14px;">(Нет закрепов)</li>`;
+    }
+    let titleBar = document.getElementById('vibe-pins-title-bar');
+    if (titleBar && !document.getElementById('vibe-add-bookmark-btn')) {
+        let starBtn = document.createElement('button');
+        starBtn.id = 'vibe-add-bookmark-btn';
+        starBtn.title = 'Добавить кастомную закладку';
+        starBtn.textContent = '⭐';
+        starBtn.style.cssText = 'margin-left:7px;font-size:19px;cursor:pointer;background:none;border:none;color:gold;transition:filter 0.15s;border-radius:7px;';
+        starBtn.onmouseover = () => starBtn.style.filter = 'brightness(1.5)';
+        starBtn.onmouseout  = () => starBtn.style.filter = '';
+        starBtn.onclick = addCustomBookmark;
+        titleBar.appendChild(starBtn);
+    }
+    let hist = getHistory();
+    let hList = document.getElementById('vibe-history-list');
+    if (hList) {
+        hList.innerHTML = hist.length
+            ? hist.map((item, i) =>
+                `<li class="vibe-history-item" data-hindex="${i}" title="${item.desc||item.value}">
+                    <span>${item.desc||item.value}</span>
+                    <div class="vibe-hist-action">
+                        <span class="vibe-pin" title="Закрепить">📌</span>
+                        <span class="vibe-remove" title="Удалить">✖</span>
+                    </div>
+                </li>`
+            ).join('')
+            : `<li style="color:#666;font-size:14px;">(История пуста)</li>`;
+    }
+}
+
+function createPanel() {
+    let old = document.getElementById('vibe-quickpanel');
+    if (old) {
+        old.classList.add('vibe-hide');
+        setTimeout(()=>old.remove(), 320);
+    }
+    let panel = document.createElement('div');
+    panel.id = 'vibe-quickpanel';
+    panel.innerHTML = `
+      <div id="vibe-history-section" class="vibe-history-section hide">
+        <div id="vibe-pins-title-bar" class="vibe-history-title">Закреплённые</div>
+        <ul id="vibe-history-pins"></ul>
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+            <div class="vibe-history-title">История</div>
+            <button id="vibe-clear-history-btn" class="vibe-clear-history-btn" title="Удалить всю историю">🗑️ Очистить</button>
+        </div>
+        <ul id="vibe-history-list"></ul>
+      </div>
+      <div id="vibe-quickpanel-header-row">
+        <div id="vibe-quickpanel-title">Banana GO</div>
+        <button id="vibe-history-btn" title="История">🦍</button>
+      </div>
+      <div id="vibe-jump-input-group">
+        <input id="vibe-jump-input" type="text" placeholder="Перейти к..." autocomplete="off" />
+        <button id="vibe-jump-search-btn" title="Перейти" class="ds-glow-btn">
+          <svg width="22" height="22" viewBox="0 0 20 20"><circle cx="8.5" cy="8.5" r="7" stroke="gold" stroke-width="2" fill="none"/><line x1="15" y1="15" x2="11.7" y2="11.7" stroke="gold" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div id="vibe-jump-msg"></div>
+      <div id="vibe-quickpanel-close" title="Свернуть">✕</div>
+      <div id="vibe-seller-choose-wrap" style="display:none;"></div>
+    `;
+    document.body.appendChild(panel);
+// 🦍🍌 Banana Monkey Patch: заменяем input на textarea
+(function monkeyInputToTextarea() {
+    let oldInput = document.getElementById('vibe-jump-input');
+    if (!oldInput || oldInput.tagName === 'TEXTAREA') return;
+    let textarea = document.createElement('textarea');
+    textarea.id = oldInput.id;
+    textarea.className = oldInput.className;
+    textarea.placeholder = oldInput.placeholder;
+    textarea.autocomplete = oldInput.autocomplete;
+    textarea.style.cssText = oldInput.style.cssText;
+    textarea.value = oldInput.value || '';
+    textarea.rows = 1;
+    textarea.setAttribute('spellcheck', 'false');
+    oldInput.parentNode.replaceChild(textarea, oldInput);
+})();
+
+
+    document.getElementById('vibe-quickpanel-close').onclick = collapsePanel;
+    document.getElementById('vibe-jump-search-btn').onclick = function() {
+        jumpAction();
         setTimeout(() => {
-            let input = document.getElementById('vibe-jump-input');
-            if (input) input.focus();
-        }, 100);
-
+            document.getElementById('vibe-jump-input').style.width = '';
+        }, 50);
+    };
+    document.getElementById('vibe-jump-input').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            jumpAction();
+            setTimeout(() => {
+                document.getElementById('vibe-jump-input').style.width = '';
+            }, 50);
+        }
+    });
+    document.getElementById('vibe-jump-input').addEventListener('paste', function(e) {
         setTimeout(() => {
-            let btn = document.getElementById('vibe-clear-history-btn');
-            if (btn) {
-                btn.onclick = function() {
-                    setHistory([]);
-                    renderHistory();
-                };
-            }
-        }, 120);
+            jumpAction();
+            setTimeout(() => {
+                document.getElementById('vibe-jump-input').style.width = '';
+            }, 50);
+        }, 80);
+    });
 
+    let histBtn = document.getElementById('vibe-history-btn');
+    histBtn.onclick = function() {
+        showHistory = !showHistory;
         renderHistory();
-    }
-
-    function openEditPopup(currentValue, onSave) {
-        if (editPopup) {
-            editPopup.remove();
-            editPopup = null;
-        }
-        editPopup = document.createElement('div');
-        editPopup.id = 'vibe-edit-popup';
-        editPopup.innerHTML = `
-            <input type="text" value="${escapeHtml(currentValue)}" maxlength="120">
-            <div class="vibe-edit-popup-btns">
-                <button type="button" id="vibe-edit-save">Сохранить</button>
-                <button type="button" id="vibe-edit-cancel">Отмена</button>
-            </div>
-        `;
-        document.body.appendChild(editPopup);
-        const input = editPopup.querySelector('input');
-        setTimeout(() => input.focus(), 100);
-        editPopup.querySelector('#vibe-edit-save').onclick = function() {
-            if (input.value.trim()) {
-                onSave(input.value);
-                editPopup.remove();
-                editPopup = null;
+    };
+    panel.addEventListener('click', function(e) {
+        let editBtn = e.target.closest('.vibe-edit');
+        if (editBtn) {
+            let li = editBtn.closest('.vibe-history-pin');
+            if (li) {
+                let pins = getPins();
+                let i = Number(li.dataset.pindex);
+                let current = pins[i];
+                showEditModal(i, current.desc || current.value);
             }
-        };
-        editPopup.querySelector('#vibe-edit-cancel').onclick = function() {
-            editPopup.remove();
-            editPopup = null;
-        };
-    }
-
-    function collapsePanel() {
-        let panel = document.getElementById('vibe-quickpanel');
-        if (panel) {
-            panel.classList.add('vibe-hide');
-            setTimeout(()=>panel.remove(), 320);
+            return;
         }
+        let pinBtn = e.target.closest('.vibe-pin');
+        if (pinBtn) {
+            let li = pinBtn.closest('.vibe-history-item');
+            if (li) pinHistory(Number(li.dataset.hindex));
+            return;
+        }
+        let unpinBtn = e.target.closest('.vibe-unpin');
+        if (unpinBtn) {
+            let li = unpinBtn.closest('.vibe-history-pin');
+            if (li) unpin(Number(li.dataset.pindex));
+            return;
+        }
+        let rmBtn = e.target.closest('.vibe-remove');
+        if (rmBtn) {
+            let liH = rmBtn.closest('.vibe-history-item');
+            if (liH) removeFromHistory(Number(liH.dataset.hindex));
+            let liP = rmBtn.closest('.vibe-history-pin');
+            if (liP) removeFromPins(Number(liP.dataset.pindex));
+            return;
+        }
+        let item = e.target.closest('.vibe-history-item');
+        if (item && !e.target.classList.contains('vibe-pin') && !e.target.classList.contains('vibe-remove')) {
+            doHistoryAction(getHistory()[Number(item.dataset.hindex)]);
+            return;
+        }
+        let pin = e.target.closest('.vibe-history-pin');
+        if (pin && !e.target.classList.contains('vibe-unpin') && !e.target.classList.contains('vibe-remove') && !e.target.classList.contains('vibe-edit')) {
+            doHistoryAction(getPins()[Number(pin.dataset.pindex)]);
+            return;
+        }
+    });
+
+    let msg = localStorage.getItem(STORAGE_KEY+'_msg');
+    if (msg) setMsg(msg, true);
+
+    setTimeout(() => {
+        let input = document.getElementById('vibe-jump-input');
+        if (input) input.focus();
+    }, 100);
+
+    setTimeout(() => {
+        let btn = document.getElementById('vibe-clear-history-btn');
+        if (btn) {
+            btn.onclick = function() {
+                setHistory([]);
+                renderHistory();
+            };
+        }
+    }, 120);
+
+    renderHistory();
+    localStorage.setItem(PANEL_STATE_KEY, 'panel');
+    // --- Блокируем прокрутку страницы, если мышка над историей ---
+    setTimeout(() => {
+        const hist = document.getElementById('vibe-history-list');
+        if (!hist) return;
+        hist.addEventListener('wheel', function(e) {
+            const scrollTop = hist.scrollTop;
+            const scrollHeight = hist.scrollHeight;
+            const clientHeight = hist.clientHeight;
+            const delta = e.deltaY;
+            const atTop = scrollTop === 0 && delta < 0;
+            const atBottom = scrollTop + clientHeight >= scrollHeight && delta > 0;
+            e.stopPropagation();
+            e.preventDefault();
+            // Если есть куда скроллить — скроллим только историю
+            if ((delta < 0 && !atTop) || (delta > 0 && !atBottom)) {
+                hist.scrollTop += delta;
+            }
+        }, { passive: false });
+    }, 50);
+
+}
+
+function collapsePanel() {
+    let panel = document.getElementById('vibe-quickpanel');
+    if (panel) {
+        panel.classList.add('vibe-hide');
+        setTimeout(()=>panel.remove(), 320);
+    }
+    let btn = document.createElement('div');
+    btn.id = 'vibe-quickpanel-collapsed';
+    btn.title = "Развернуть быстрый переход";
+    btn.innerHTML = '🍌';
+    btn.classList.add('vibe-hide');
+    setTimeout(()=>{
+        btn.classList.remove('vibe-hide');
+    }, 20);
+    btn.onclick = function() {
+        btn.classList.add('vibe-hide');
+        setTimeout(()=>{
+            btn.remove();
+            createPanel();
+        }, 270);
+    };
+    document.body.appendChild(btn);
+    localStorage.setItem(PANEL_STATE_KEY, 'collapsed');
+}
+
+function restorePanelState() {
+    let state = localStorage.getItem(PANEL_STATE_KEY) || 'panel';
+    if (state === 'panel') {
+        createPanel();
+    } else {
         let btn = document.createElement('div');
         btn.id = 'vibe-quickpanel-collapsed';
         btn.title = "Развернуть быстрый переход";
         btn.innerHTML = '🍌';
         btn.classList.add('vibe-hide');
-        setTimeout(()=>{
-            btn.classList.remove('vibe-hide');
-        }, 20);
+        setTimeout(()=>{ btn.classList.remove('vibe-hide'); }, 20);
         btn.onclick = function() {
             btn.classList.add('vibe-hide');
             setTimeout(()=>{
@@ -503,163 +719,235 @@
         };
         document.body.appendChild(btn);
     }
-    function uncollapsePanelIfAny() {
-        let btn = document.getElementById('vibe-quickpanel-collapsed');
-        if (btn) {
-            btn.classList.add('vibe-hide');
-            setTimeout(()=>{
-                btn.remove();
-                createPanel();
-            }, 270);
-        }
-    }
+}
 
-    function setMsg(text, save = false) {
-        let m = document.getElementById('vibe-jump-msg');
-        if (!m) return;
-        if (typeof text === "string" && text.startsWith("BANANA!!!")) {
-            m.innerHTML = text;
-        } else {
-            m.textContent = text;
-        }
-        if (save) localStorage.setItem(STORAGE_KEY+'_msg', text || '');
+function setMsg(text, save = false) {
+    let m = document.getElementById('vibe-jump-msg');
+    if (!m) return;
+    if (typeof text === "string" && text.startsWith("BANANA!!!")) {
+        m.innerHTML = text;
+    } else {
+        m.textContent = text;
     }
-    function playBananaEasterEgg() {
-        const monkeySound = "https://assets.mixkit.co/active_storage/sfx/106/106-preview.mp3";
-        let audio = new Audio(monkeySound);
-        audio.volume = 0.7;
-        audio.play();
-    }
+    if (save) localStorage.setItem(STORAGE_KEY+'_msg', text || '');
+}
 
-    function tryExtractSellerIdFromPage(nick) {
-        let sellerLinks = Array.from(document.querySelectorAll('a[href*="/sellers/"]'));
-        for (let link of sellerLinks) {
-            let href = link.getAttribute('href');
-            let idMatch = href && href.match(/sellers\/(\d+)/);
-            if (idMatch) {
-                let linkNick = link.textContent.trim().toLowerCase();
-                if (!nick || (linkNick === nick.trim().toLowerCase())) {
-                    return idMatch[1];
-                }
+function playBananaEasterEgg() {
+    const monkeySound = "https://assets.mixkit.co/active_storage/sfx/106/106-preview.mp3";
+    let audio = new Audio(monkeySound);
+    audio.volume = 0.7;
+    audio.play();
+}
+
+function tryExtractSellerIdFromPage(nick) {
+    let sellerLinks = Array.from(document.querySelectorAll('a[href*="/sellers/"]'));
+    for (let link of sellerLinks) {
+        let href = link.getAttribute('href');
+        let idMatch = href && href.match(/sellers\/(\d+)/);
+        if (idMatch) {
+            let linkNick = link.textContent.trim().toLowerCase();
+            if (!nick || (linkNick === nick.trim().toLowerCase())) {
+                return idMatch[1];
             }
         }
-        return null;
     }
+    return null;
+}
 
-    function doHistoryAction(item) {
-        if (!item) return;
-        if (item.type === 'orders') {
-            goToOrders(extractOrderNumbers(item.value));
-        } else if (item.type === 'seller' && item.sellerId) {
-            window.location.href = `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${item.sellerId}`;
-        } else if (item.type === 'nick') {
-            let cache = sellerCache();
-            let sellerId = cache.get(item.value);
-            if (sellerId) {
-                window.location.href = `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${sellerId}`;
-            } else {
-                localStorage.setItem(STORAGE_KEY+'_pending_seller', item.value);
-                window.location.href = `https://my.digiseller.ru/asp/search.asp?txt_NameSeller=${encodeURIComponent(item.value)}`;
-            }
-        } else if (item.type === 'ggsel') {
-            window.location.href = item.value + (item.value.includes('?') ? '&' : '?') + 'extract_seller_from_hist=1';
-        } else if (item.type === 'bookmark') {
-            window.open(item.value, '_blank');
-        }
-    }
-
-    function clearInput() {
-        let input = document.getElementById('vibe-jump-input');
-        if (input) {
-            input.value = '';
-            input.focus();
-        }
-    }
-
-    function isEmail(str) {
-        return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(str.trim());
-    }
-
-    function jumpAction() {
-        let input = document.getElementById('vibe-jump-input');
-        if (!input) return;
-        let value = input.value.trim();
-
-        // BANANA
-        if (/б\s*а\s*н\s*а\s*н\s*а/i.test(value.replace(/\s+/g, ''))) {
-            playBananaEasterEgg();
-            setMsg('BANANA!!! <img src="https://www.emojiall.com/images/240/telegram/1f98d.gif" style="height:200px;margin:0 3px;vertical-align:middle;">'.repeat(9), true);
-            clearInput();
-            return;
-        }
-        if (!value) {
-            log("Введите номер заказа или ник продавца");
-            clearInput();
-            return;
-        }
-        if (isEmail(value)) {
-            log('Переходим к покупателю по email…');
-            window.location.href = `https://my.digiseller.ru/asp/goods_of_buyer.asp?Email=${encodeURIComponent(value)}`;
-            clearInput();
-            return;
-        }
-        const ggselProductReg = /^https:\/\/ggsel\.net\/(en\/)?catalog\/product\/\d+/i;
-        if (ggselProductReg.test(value)) {
-            log('Переходим на товар, чтобы вытащить seller id...');
-            addToHistory({type:'ggsel', value:value, desc:"GGSEL товар"});
-            window.location.href = value + (value.includes('?') ? '&' : '?') + 'extract_seller=1';
-            clearInput();
-            return;
-        }
+function doHistoryAction(item) {
+    if (!item) return;
+    if (item.type === 'orders') {
+        goToOrders(extractOrderNumbers(item.value));
+    } else if (item.type === 'seller' && item.sellerId) {
+        window.location.href = `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${item.sellerId}`;
+    } else if (item.type === 'nick') {
         let cache = sellerCache();
-        let sellerId = cache.get(value);
+        let sellerId = cache.get(item.value);
         if (sellerId) {
-            log(`Найден в кеше! Сразу к сообщениям!`);
-            addToHistory({type:'seller', value:value, sellerId, desc:`Продавец ${value}`});
-            localStorage.removeItem(STORAGE_KEY+'_pending_seller');
-            localStorage.removeItem(STORAGE_KEY+'_msg');
-            setTimeout(function() {
-                window.location.href = `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${sellerId}`;
-            }, 250);
-            clearInput();
-            return;
+            window.location.href = `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${sellerId}`;
+        } else {
+            localStorage.setItem(STORAGE_KEY+'_pending_seller', item.value);
+            window.location.href = `https://my.digiseller.ru/asp/search.asp?txt_NameSeller=${encodeURIComponent(item.value)}`;
         }
+    } else if (item.type === 'ggsel') {
+        window.location.href = item.value + (item.value.includes('?') ? '&' : '?') + 'extract_seller_from_hist=1';
+    } else if (item.type === 'bookmark') {
+        window.open(item.value, '_blank');
+    } else if (item.type === 'email') {
+        window.location.href = `https://my.digiseller.ru/asp/goods_of_buyer.asp?Email=${encodeURIComponent(item.value)}`;
+    }
+    else if (item.type === 'ip') {
+        window.location.href = `https://my.digiseller.ru/asp/goods_of_buyer.asp?IP=${encodeURIComponent(item.value)}`;
+    }
+}
 
-        // --- ТОЛЬКО ЦИФРЫ = НОМЕР ЗАКАЗА (и списки только из чисел) ---
-        const numbersOnly = value.replace(/[\s,;]+/g, ',').split(',').filter(x=>x).every(x => /^\d{3,}$/.test(x));
-        if (numbersOnly) {
-            let orders = value.replace(/[\s,;]+/g, ',').split(',').map(x=>x.trim()).filter(x=>x.length >= 3);
-            goToOrders(orders);
-            localStorage.removeItem(STORAGE_KEY);
-            localStorage.removeItem(STORAGE_KEY+'_pending_seller');
-            localStorage.removeItem(STORAGE_KEY+'_msg');
-            clearInput();
-            return;
+function clearInput() {
+    let input = document.getElementById('vibe-jump-input');
+    if (input) {
+        input.value = '';
+        input.style.width = '';
+        input.focus();
+    }
+}
+
+function isIPv4(str) {
+    str = str.trim();
+    if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(str)) return false;
+    return str.split('.').every(seg => {
+        if (!/^\d{1,3}$/.test(seg)) return false;
+        if (seg.length > 1 && seg[0] === '0') return false;
+        let n = Number(seg);
+        return n >= 0 && n <= 255;
+    });
+}
+
+function isEmail(str) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(str.trim());
+}
+
+// 🍌 Универсальный банановый сплиттер: разбивает строку на ники по запятым, переносам, ; и табуляции
+function splitNicksBanana(str) {
+    return str
+        .replace(/[\n\r\t;]+/g, ',') // все переносы, табы, ; превращаем в запятую
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean);
+}
+
+// Исправленная функция jumpAction с универсальным парсингом заказов:
+function jumpAction() {
+    let input = document.getElementById('vibe-jump-input');
+    if (!input) return;
+    let value = input.value.trim();
+// ========== Блок поиска по ТОВАРАМ (Banana 🦍🍌 через вкладки) ==========
+let products = value
+    .replace(/[\s,;]+/g, ',')
+    .split(',')
+    .map(x => x.trim())
+    .filter(x => /^\d{1,8}$/.test(x));
+
+if (products.length && products.join(',') === value.replace(/[\s,;]+/g, ',')) {
+    if (products.length === 1) {
+        // Переходим сразу на страницу товара fixed
+        window.location.href = 'https://ggsel.net/catalog/product/' + products[0] + '?exec=1';
+
+        return;
+    } else {
+        // Открываем все товары в новых вкладках fixed
+        products.slice().reverse().forEach(productId => {
+            window.open('https://ggsel.net/catalog/product/' + productId + '?exec=1', '_blank');
+
+        });
+        clearInput();
+        log('Открыты страницы товаров: ' + products.join(', '));
+        addToHistory({type:'product', value:products.join(', '), desc:'Товар(ы): ' + products.join(', ')});
+        return;
+    }
+}
+
+
+
+
+    if (/б\s*а\s*н\s*а\s*н\s*а/i.test(value.replace(/\s+/g, ''))) {
+        playBananaEasterEgg();
+        setMsg('BANANA!!! <img src="https://www.emojiall.com/images/240/telegram/1f98d.gif" style="height:200px;margin:0 3px;vertical-align:middle;">'.repeat(9), true);
+        clearInput();
+        return;
+    }
+    if (!value) {
+        log("Введите номер заказа или ник продавца");
+        clearInput();
+        return;
+    }
+
+
+
+   // Универсальное извлечение всех заказов: все числа с 9 и более цифрами
+// --- Заказ — только 9 цифр подряд, если НЕТ БУКВ в поле ---
+if (!/[a-zA-Zа-яА-ЯёЁ]/.test(value)) {
+    let orderMatches = value.match(/\d{9}/g);
+    if (orderMatches && orderMatches.length) {
+        log('Найдены заказы: ' + orderMatches.join(', '));
+        addToHistory({type:'orders', value: orderMatches.join(', '), desc: 'Заказы: ' + orderMatches.join(', ')});
+        goToOrders(orderMatches);
+        clearInput();
+        return;
+    }
+}
+
+    if (isEmail(value)) {
+        log('Переходим к покупателю по email…');
+        addToHistory({type:'email', value:value, desc:'Покупатель: ' + value});
+        window.location.href = `https://my.digiseller.ru/asp/goods_of_buyer.asp?Email=${encodeURIComponent(value)}`;
+        clearInput();
+        return;
+    }
+    if (isIPv4(value)) {
+        log('Переходим к покупателю по IP…');
+        addToHistory({type:'ip', value: value, desc: 'IP ' + value});
+        window.location.href = `https://my.digiseller.ru/asp/goods_of_buyer.asp?IP=${encodeURIComponent(value)}`;
+        clearInput();
+        return;
+    }
+// === Несколько продавцов через любые разделители (banana split) ===
+if (
+    (/[,\n\r;\t]/.test(value)) && /[a-zA-Zа-яА-ЯёЁ]/.test(value)
+) {
+    let rawNicks = splitNicksBanana(value);
+    let cache = sellerCache();
+
+   // Открываем всех продавцов в ОДНОМ порядке (и из кеша, и не из кеша)
+rawNicks.slice().reverse().forEach(nick => {
+    let sellerId = cache.get(nick);
+    if (sellerId) {
+        window.open(`https://my.digiseller.ru/asp/seller_messages.asp?id_s=${sellerId}`, '_blank');
+        addToHistory({ type: 'seller', value: nick, sellerId, desc: `Продавец ${nick}` });
+    } else {
+        addToHistory({ type: 'nick', value: nick, desc: `Продавец ${nick}` });
+        let win = window.open(`https://my.digiseller.ru/asp/search.asp?txt_NameSeller=${encodeURIComponent(nick)}`, '_blank');
+        if (win) {
+            win.name = STORAGE_KEY + '_pending_seller=' + nick;
         }
+    }
+});
 
-        // --- Если есть хотя бы одна буква — это НИК ---
-        if (/[a-zA-Zа-яА-ЯёЁ]/.test(value)) {
-            let pageSellerId = tryExtractSellerIdFromPage(value);
-            if (pageSellerId) {
-                log(`Нашли ID продавца на странице: ${pageSellerId} — кешируем и переходим!`);
-                addToHistory({type:'seller', value:value, sellerId:pageSellerId, desc:`Продавец ${value}`});
-                sellerCache().set(value, pageSellerId);
-                setTimeout(function() {
-                    window.location.href = `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${pageSellerId}`;
-                }, 300);
-                clearInput();
-                return;
-            }
-            log("Ищем продавца…");
-            addToHistory({type:'nick', value:value, desc:`Продавец ${value}`});
-            localStorage.setItem(STORAGE_KEY+'_pending_seller', value);
-            localStorage.removeItem(STORAGE_KEY+'_msg');
-            window.location.href = `https://my.digiseller.ru/asp/search.asp?txt_NameSeller=${encodeURIComponent(value)}`;
-            clearInput();
-            return;
-        }
+    clearInput();
+    return;
+}
 
-        // --- Последний fallback: ищем как ник ---
+
+
+let ggselProductMatch = value.match(/^https:\/\/ggsel\.net\/(en\/)?catalog\/product\/(\d+)/i);
+if (ggselProductMatch) {
+    let prodId = ggselProductMatch[2];
+    // Банановый exec-патч
+    let url = value;
+    if (!/[?&]exec=1($|&)/.test(url)) {
+        url += (url.includes('?') ? '&' : '?') + 'exec=1';
+    }
+    log('Переходим на товар, чтобы вытащить seller id...');
+    addToHistory({type:'ggsel', value: value, desc:`GGSEL товар #${prodId}`});
+    window.location.href = url;
+    clearInput();
+    return;
+}
+
+
+    let cache = sellerCache();
+    let sellerId = cache.get(value);
+    if (sellerId) {
+        log(`Найден в кеше! Сразу к сообщениям!`);
+        addToHistory({type:'seller', value:value, sellerId, desc:`Продавец ${value}`});
+        localStorage.removeItem(STORAGE_KEY+'_pending_seller');
+        localStorage.removeItem(STORAGE_KEY+'_msg');
+        setTimeout(function() {
+            window.location.href = `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${sellerId}`;
+        }, 250);
+        clearInput();
+        return;
+    }
+
+    if (/[a-zA-Zа-яА-ЯёЁ]/.test(value)) {
         let pageSellerId = tryExtractSellerIdFromPage(value);
         if (pageSellerId) {
             log(`Нашли ID продавца на странице: ${pageSellerId} — кешируем и переходим!`);
@@ -677,39 +965,197 @@
         localStorage.removeItem(STORAGE_KEY+'_msg');
         window.location.href = `https://my.digiseller.ru/asp/search.asp?txt_NameSeller=${encodeURIComponent(value)}`;
         clearInput();
+        return;
     }
+    let pageSellerId = tryExtractSellerIdFromPage(value);
+    if (pageSellerId) {
+        log(`Нашли ID продавца на странице: ${pageSellerId} — кешируем и переходим!`);
+        addToHistory({type:'seller', value:value, sellerId:pageSellerId, desc:`Продавец ${value}`});
+        sellerCache().set(value, pageSellerId);
+        setTimeout(function() {
+            window.location.href = `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${pageSellerId}`;
+        }, 300);
+        clearInput();
+        return;
+    }
+    log("Ищем продавца…");
+    addToHistory({type:'nick', value:value, desc:`Продавец ${value}`});
+    localStorage.setItem(STORAGE_KEY+'_pending_seller', value);
+    localStorage.removeItem(STORAGE_KEY+'_msg');
+    window.location.href = `https://my.digiseller.ru/asp/search.asp?txt_NameSeller=${encodeURIComponent(value)}`;
+    clearInput();
+}
 
-    function checkAndJumpToSellerMsg() {
-        let pendingSeller = localStorage.getItem(STORAGE_KEY+'_pending_seller');
-        if (!pendingSeller) return;
-        let maxWait = 7000;
-        let startedAt = Date.now();
-        function tryJump(step) {
-            let input = document.querySelector('input[name="ID_S"]');
-            if (input && input.value && /^\d+$/.test(input.value)) {
-                log(`Нашли ID продавца: ${input.value} — кешируем и переходим на сообщения...`);
-                addToHistory({type:'seller', value:pendingSeller, sellerId:input.value, desc:`Продавец ${pendingSeller}`});
-                sellerCache().set(pendingSeller, input.value);
-                localStorage.setItem(STORAGE_KEY+'_seller_id', input.value);
-                localStorage.removeItem(STORAGE_KEY+'_pending_seller');
-                localStorage.removeItem(STORAGE_KEY+'_msg');
-                setTimeout(function() {
-                    window.location.href = `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${input.value}`;
-                }, 350);
-            } else {
-                if (Date.now() - startedAt > maxWait) {
-                    log(`Ошибка! Не найден ID продавца для ника "${pendingSeller}" за ${(Date.now()-startedAt)/1000} сек.`);
-                    localStorage.removeItem(STORAGE_KEY+'_pending_seller');
-                    return;
-                }
-                setTimeout(function() { tryJump((step||1)+1); }, 350);
+function showSellerChoose(nicks, ids, query) {
+    const wrap = document.getElementById('vibe-seller-choose-wrap');
+    if (!wrap) return;
+    wrap.innerHTML = '';
+    wrap.style.display = '';
+    let msgHtml = `<div style="color:#ffe37e;font-size:15px;font-weight:bold;margin-bottom:5px;">Выберите продавца:</div>`;
+    let grid = nicks.length > 10;
+    let listClass = grid ? 'vibe-seller-grid' : 'vibe-seller-list';
+    msgHtml += `<div id="vibe-seller-choose-list" class="${listClass}">` +
+        nicks.map((nick, i) => `<button class="vibe-seller-link" data-i="${i}" tabindex="0">${nick}</button>`).join('') +
+        `</div>`;
+    if (query && nicks.length) {
+        msgHtml += `<div style="margin-top:10px;color:#f6aeae;font-size:13px;">Несколько продавцов совпали с "${query}".</div>`;
+    }
+    wrap.innerHTML = msgHtml;
+    let histSection = document.getElementById('vibe-history-section');
+    if (histSection) histSection.style.display = 'none';
+    let firstBtn = wrap.querySelector('.vibe-seller-link');
+    if (firstBtn) setTimeout(() => firstBtn.focus(), 90);
+    wrap.querySelectorAll('.vibe-seller-link').forEach(btn => {
+        btn.onclick = () => {
+            let i = +btn.dataset.i;
+            let sellerNick = nicks[i], sellerId = ids[i];
+            window.location.href = `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${sellerId}`;
+        };
+    });
+}
+
+function checkAndJumpToSellerMsg() {
+    let pendingSeller = null;
+// Сначала пытаемся взять из window.name (если есть)
+if (window.name && window.name.startsWith(STORAGE_KEY + '_pending_seller=')) {
+    pendingSeller = window.name.substring((STORAGE_KEY + '_pending_seller=').length);
+} else {
+    pendingSeller = localStorage.getItem(STORAGE_KEY+'_pending_seller');
+}
+if (!pendingSeller) return;
+    let spans = Array.from(document.querySelectorAll('span[style*="line-height"] > a.targettree[href*="seller_info.asp?id_s="]'));
+    let sellerBlocks = [];
+    spans.forEach(a => {
+        let span = a.parentElement;
+        if (span && span.tagName === "SPAN") {
+            let txt = span.childNodes[0] && span.childNodes[0].nodeValue;
+            let nick = txt && txt.replace(/\xa0$/,'').trim();
+            let href = a.getAttribute('href');
+            let m = href && href.match(/id_s=(\d+)/);
+            if (nick && m) {
+                sellerBlocks.push({nick: nick, id: m[1]});
             }
         }
-        tryJump(1);
-    }
+    });
+// === ТОЧНОЕ СОВПАДЕНИЕ по одному нику ===
+let pending = (pendingSeller || "").trim().toLowerCase();
+let exact = sellerBlocks.find(block => block.nick.trim().toLowerCase() === pending);
+if (exact) {
+    log(`Точное совпадение: ${exact.nick} → ID ${exact.id}`);
+    addToHistory({type:'seller', value:exact.nick, sellerId:exact.id, desc:`Продавец ${exact.nick}`});
+    sellerCache().set(exact.nick, exact.id);
+    localStorage.removeItem(STORAGE_KEY+'_pending_seller');
+    localStorage.removeItem(STORAGE_KEY+'_msg');
+    window.location.href = `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${exact.id}`;
+    return;
+}
 
-    createPanel();
-    setTimeout(uncollapsePanelIfAny, 500);
-    checkAndJumpToSellerMsg();
+// === Только если в pendingSeller несколько ников ===
+if (pendingSeller.includes(',')) {
+    const pendingList = pendingSeller.split(',').map(s => s.trim());
+    // Для каждого ника ищем только ПОЛНОЕ совпадение
+    let matched = [];
+    pendingList.forEach(pendingNick => {
+        let exact = sellerBlocks.find(block => block.nick.trim().toLowerCase() === pendingNick.trim().toLowerCase());
+        if (exact) {
+            matched.push(exact);
+        }
+    });
+    if (matched.length > 0) {
+        matched.forEach(block => {
+            log(`Точное совпадение: ${block.nick} → ID ${block.id}`);
+            addToHistory({type:'seller', value:block.nick, sellerId:block.id, desc:`Продавец ${block.nick}`});
+            sellerCache().set(block.nick, block.id);
+            window.open(`https://my.digiseller.ru/asp/seller_messages.asp?id_s=${block.id}`, '_blank');
+        });
+        localStorage.removeItem(STORAGE_KEY+'_pending_seller');
+        localStorage.removeItem(STORAGE_KEY+'_msg');
+        return;
+    }
+}
+
+
+
+    if (sellerBlocks.length === 1) {
+        let sellerId = sellerBlocks[0].id;
+        log(`Нашли только одного продавца (${sellerBlocks[0].nick}), кешируем!`);
+        addToHistory({type:'seller', value:pendingSeller, sellerId, desc:`Продавец ${sellerBlocks[0].nick}`});
+        sellerCache().set(sellerBlocks[0].nick, sellerId);
+        localStorage.setItem(STORAGE_KEY+'_seller_id', sellerId);
+        localStorage.removeItem(STORAGE_KEY+'_pending_seller');
+        localStorage.removeItem(STORAGE_KEY+'_msg');
+        setTimeout(function() {
+            window.location.href = `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${sellerId}`;
+        }, 400);
+        return;
+    }
+    if (sellerBlocks.length > 1) {
+        showSellerChoose(sellerBlocks.map(b=>b.nick), sellerBlocks.map(b=>b.id), pendingSeller);
+        return;
+    }
+    let input = document.querySelector('input[name="ID_S"]');
+    if (input && input.value && /^\d+$/.test(input.value)) {
+        log(`Нашли ID продавца: ${input.value} — кешируем и переходим на сообщения...`);
+        addToHistory({type:'seller', value:pendingSeller, sellerId:input.value, desc:`Продавец ${pendingSeller}`});
+sellerCache().set(pendingSeller, input.value);
+localStorage.setItem(STORAGE_KEY+'_seller_id', input.value);
+localStorage.removeItem(STORAGE_KEY+'_pending_seller');
+localStorage.removeItem(STORAGE_KEY+'_msg');
+setTimeout(function() {
+    window.location.href = `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${input.value}`;
+}, 350);
+
+    }
+}
+
+restorePanelState();
+checkAndJumpToSellerMsg();
+// Блокируем прокрутку страницы, когда мышка над историей (только внутри блока)
+document.addEventListener('DOMContentLoaded', function() {
+    const hist = document.getElementById('vibe-history-list');
+    if (!hist) return;
+    hist.addEventListener('wheel', function(e) {
+        // Проверяем: можно ли прокрутить историю?
+        const scrollTop = hist.scrollTop;
+        const scrollHeight = hist.scrollHeight;
+        const clientHeight = hist.clientHeight;
+        const delta = e.deltaY;
+        const atTop = scrollTop === 0 && delta < 0;
+        const atBottom = scrollTop + clientHeight >= scrollHeight && delta > 0;
+
+        // Если есть куда скроллить — прокручиваем только историю
+        // Если некуда — блокируем прокрутку страницы в любом случае
+        if (
+            (delta < 0 && !atTop) ||
+            (delta > 0 && !atBottom) ||
+            atTop || atBottom
+        ) {
+            e.stopPropagation();
+            e.preventDefault();
+        }
+    }, { passive: false });
+});
+    // === Banana product extraction 🦍🍌 для ggsel.net ===
+   if (window.location.hostname.includes('ggsel.net')) {
+    const url = new URL(window.location.href);
+    const bananaKey = url.searchParams.get('banana_key');
+    if (url.searchParams.get('banana_product') === '1' && bananaKey && /^\d+$/.test(url.pathname.split('/').pop())) {
+        setTimeout(() => {
+            let link = document.querySelector('a.ProductSidebar_name__ElTmj[href*="/sellers/"]');
+            let m = link && link.getAttribute('href').match(/\/sellers\/(\d+)/);
+            if (m && m[1]) {
+                localStorage.setItem(bananaKey, m[1]);
+                // Открываем переписку с продавцом (как для "ссылка"):
+                window.open('https://my.digiseller.ru/asp/seller_messages.asp?id_s=' + m[1], '_blank');
+                // Можно не закрывать таб, если надо отлаживать. Иначе оставь window.close();
+                window.close();
+            } else {
+                localStorage.setItem(bananaKey, 'not_found');
+                window.close();
+            }
+        }, 1600);
+    }
+}
+
 
 })();
