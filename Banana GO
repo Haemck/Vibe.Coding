@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Digiseller: Banana GO
 // @namespace    http://tampermonkey.net/
-// @version      4.5
+// @version      4.4
 // @description  Быстрый переход + история/закрепы/закладки, стиль поиска vibe, пасхалка! Обрезка длинных названий троеточием 🦍🍌, грид-выбор продавца, статичный стиль кнопок продавцов, восстановление состояния панели, история поиска по email.
 // @author       vibe.coding
 // @match        https://my.digiseller.ru/*
@@ -24,7 +24,6 @@ if (
 
   function tryRedirectToSellerBanana(attempt = 1) {
     // Универсальный селектор: ищем seller по data-test или просто по href
-    // Универсальный пипектор
     let link =
       document.querySelector('a[data-test="sellerName"][href^="/sellers/"]') ||
       document.querySelector('a[href^="/sellers/"]');
