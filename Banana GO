@@ -10,7 +10,6 @@
 // @run-at       document-end
 // @grant        none
 // ==/UserScript==
-// === сасать америка
 (function() {
     'use strict';
 // === Banana 🦍🍌 Product Seller Redirect v5 ===
@@ -25,6 +24,7 @@ if (
 
   function tryRedirectToSellerBanana(attempt = 1) {
     // Универсальный селектор: ищем seller по data-test или просто по href
+    // Универсальный пипектор
     let link =
       document.querySelector('a[data-test="sellerName"][href^="/sellers/"]') ||
       document.querySelector('a[href^="/sellers/"]');
