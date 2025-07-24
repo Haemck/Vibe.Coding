@@ -6,6 +6,8 @@
 // @author       vibe.coding
 // @match        https://my.digiseller.ru/*
 // @grant        GM_xmlhttpRequest
+// @updateURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/Bananza%20Mailz
+// @downloadURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/Bananza%20Mailz
 
 // ==/UserScript==
 
