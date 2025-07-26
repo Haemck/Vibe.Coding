@@ -7,8 +7,8 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @match        *://*/*
-// @updateURL
-// @downloadURL
+// @updateURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/MonkeFIND
+// @downloadURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/MonkeFIND
 // ==/UserScript==
 
 (function() {
