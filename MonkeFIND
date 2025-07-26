@@ -1,0 +1,564 @@
+// ==UserScript==
+// @name         MonkeFIND
+// @namespace    http://tampermonkey.net/
+// @version      2.8
+// @description  Быстрый и глубокий поиск, окно путей с ID, кросс-доменная история и результаты, восстановление после перехода, "Скопировано!", уникальный префикс mnkfnd
+// @grant        GM_xmlhttpRequest
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @match        *://*/*
+// @updateURL
+// @downloadURL
+// ==/UserScript==
+
+(function() {
+  'use strict';
+
+  // === КОНСТАНТЫ И СТИЛИ ===
+  const API_BASE = 'https://script.google.com/macros/s/AKfycbyOvXlDlbhR2StP5oad3PFzWlyrS2t1_gjKUJ86ZdPQ8xvATahm-DcQM1nvWzHkp05RKQ/exec';
+  const LS_HISTORY = 'mnkfnd_finder_search_history3_global';
+  const LS_PANEL_STATE = 'mnkfnd_finder_panel_state_global';
+  const LS_LAST_QUERY = 'mnkfnd_finder_last_query3_global';
+  const LS_LAST_RESULTS = 'mnkfnd_finder_last_results3_global';
+  const RESULTS_MAX_HEIGHT = 295;
+
+  // === КРОСС-ДОМЕННОЕ ХРАНИЛИЩЕ ===
+  async function getStore(key, def) {
+    try {
+      let v = await GM_getValue(key, undefined);
+      return v === undefined ? def : JSON.parse(v);
+    } catch { return def; }
+  }
+  async function setStore(key, value) {
+    await GM_setValue(key, JSON.stringify(value));
+  }
+
+  // === UI & ЛОГИКА — ИНИЦИАЛИЗАЦИЯ ПОСЛЕ ЗАГРУЗКИ ДАННЫХ ===
+  (async function main() {
+    let searchHistory = await getStore(LS_HISTORY, []);
+    let panelState = await getStore(LS_PANEL_STATE, 'open');
+    let lastQuery = await getStore(LS_LAST_QUERY, '');
+    let lastResults = await getStore(LS_LAST_RESULTS, {fast:[],deep:[]});
+    let isPanelOpen = panelState === 'open';
+    let isHistoryOpen = false;
+
+    let fastResults = lastResults.fast || [];
+    let deepResults = lastResults.deep || [];
+    let loadingRowNum = null;
+
+    // === СТИЛИ ===
+    const style = document.createElement('style');
+    style.textContent = `
+.mnkfnd-panel-gold {position: fixed; right:32px; bottom:32px; z-index:99999;
+  min-width:320px; max-width:340px; background:#1c202c;
+  border:2px solid gold; border-radius:13px; box-shadow:0 6px 36px #000a,0 0 10px gold;
+  color:#ffe37e; font-family:Consolas,Segoe UI,Arial,sans-serif;
+  padding:16px 12px 11px 12px; transition:opacity .19s,transform .21s;
+  opacity:1; transform:scale(1);
+  font-size:14px; line-height:1.6; display:flex; flex-direction:column; gap:6px;
+  animation: mnkfnd-panel-appear .23s cubic-bezier(.5,1.7,.5,1) 1;
+  background-clip: padding-box; z-index: 99999999;}
+@keyframes mnkfnd-panel-appear {0%{opacity:0;transform:scale(.93);}80%{opacity:.97;}100%{opacity:1;transform:scale(1);}}
+.mnkfnd-panel-gold[hidden] {opacity:0;pointer-events:none;transform:scale(.92);}
+.mnkfnd-header-gold { font-size:15px; font-weight:700; letter-spacing:1.3px; margin-bottom:0;}
+.mnkfnd-search-row {display:flex;gap:5px;}
+.mnkfnd-search-inp {flex:1;padding:7px 9px; border-radius:8px 0 0 8px; border:1.1px solid gold;
+  background:#22273a;color:#ffe37e;font-size:15px;font-family:inherit;outline:none;transition:.14s;}
+.mnkfnd-search-inp:focus { border-color:#ffd34e; box-shadow:0 0 0 2px #ffd34e33;}
+.mnkfnd-search-btn {width:39px; border-radius:0 8px 8px 0; border:none;
+  background:linear-gradient(90deg,#ffd34e 60%,#ffe37e 100%);
+  color:#2e2511;font-size:16px;font-weight:bold; cursor:pointer;
+  box-shadow:0 2px 12px #ffe37e22; transition:.13s;}
+.mnkfnd-search-btn:hover {filter:brightness(1.10);box-shadow:0 3px 16px #ffd34e55;}
+.mnkfnd-close-btn, #mnkfnd-quickpanel-close {position:absolute; top:5px; right:5px; width:36px; height:36px; display:flex; align-items:center; justify-content:center;
+  background: #26262a; border-radius:25%; border:2px solid gold; color:gold;
+  font-size:22px; font-weight:bold; cursor:pointer; opacity:0.88; z-index:10; transition:background .15s, opacity .15s, box-shadow .15s;
+  box-shadow:0 3px 14px #0005; padding-bottom:5px;}
+.mnkfnd-close-btn:hover, #mnkfnd-quickpanel-close:hover {background:#312e23;opacity:1;}
+.mnkfnd-results-scroll {background:#23272b; border-radius:8px; border:1px solid #444;
+  margin-top:7px; max-height:${RESULTS_MAX_HEIGHT}px; overflow-y:auto;
+  display:flex;flex-direction:column; gap:0;
+  scrollbar-color: gold #23272b;
+  scrollbar-width: thin; padding-bottom:2px;}
+.mnkfnd-section-title {font-size:12.2px; color:#ffe37e; opacity:.77; margin:7px 0 2px 0;}
+.mnkfnd-res-item {padding:6px 0 5px 0; border-bottom:1px solid #313337; display:flex;align-items:center;gap:9px;cursor:pointer;position:relative;transition:background .14s;}
+.mnkfnd-res-item:last-child {border-bottom:none;}
+.mnkfnd-res-item:hover, .mnkfnd-paths-item:hover {background:#ffd34e18;}
+.mnkfnd-res-name {font-size:15px; font-weight:600; color:#ffe37e; max-width:70%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:pointer; border-bottom:1px dashed transparent; transition:border-color .13s; padding-left:5px;}
+.mnkfnd-res-id {font-size:12.7px; color:#77fcab; margin-left:auto; cursor:pointer; border-bottom:1px dashed transparent; transition:border-color .13s; min-width:62px;text-align:right;display:inline-block; padding-right: 10px;}
+.mnkfnd-res-name.copied,.mnkfnd-res-id.copied {border-bottom:1px dashed gold;}
+.mnkfnd-fab-btn, #mnkfnd-quickpanel-collapsed {position: fixed; right: 15px; bottom: 100px; width: 40px; height: 40px;
+  background: #1e222c; color: gold; border-radius: 50%; border: 2px solid gold; z-index: 99999998;
+  box-shadow: 0 6px 22px #0008; font-size: 20px; display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  opacity: 1; transform: scale(1); transition: opacity 0.27s, transform 0.19s;}
+.mnkfnd-fab-btn[hidden], #mnkfnd-quickpanel-collapsed.mnkfnd-hide {opacity: 0; pointer-events:none; transform: scale(0.75) translateY(30px);}
+.mnkfnd-fab-btn:hover, #mnkfnd-quickpanel-collapsed:hover { filter: brightness(1.15);}
+.mnkfnd-history-btn {margin-left:2px; background:none; border:none; color:#ffe37e; font-size:14.5px; padding:0 3px; cursor:pointer; border-radius:6px; transition:.13s; padding-left: 10px; padding-right: 10px;}
+.mnkfnd-history-btn:hover {color:gold;background:#23272b;}
+.mnkfnd-history-block {position:absolute; right:0; top:46px; min-width:200px; max-width:240px; max-height:144px; overflow-y:auto;
+  border-radius:10px; border:1.1px solid gold; background:#23272b; box-shadow:0 8px 32px #000b;
+  opacity:0; pointer-events:none; transition:opacity .17s; z-index:10001;}
+.mnkfnd-history-block.open {opacity:1; pointer-events:auto;}
+.mnkfnd-history-item {padding:7px 13px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:.12s;}
+.mnkfnd-history-item:hover {background:#1c202c;color:gold;}
+.mnkfnd-history-empty {color:#888;text-align:center;padding:10px;}
+.mnkfnd-results-scroll::-webkit-scrollbar {width:6px;}
+.mnkfnd-results-scroll::-webkit-scrollbar-thumb {background:gold;border-radius:6px;}
+.mnkfnd-results-scroll::-webkit-scrollbar-track {background:#23272b;border-radius:6px;}
+.mnkfnd-paths-side {position:fixed;right:calc(360px + 44px);bottom:32px;
+  background:#1c202c;border:2px solid gold;
+  border-radius:13px;box-shadow:0 4px 28px #000c,0 0 10px gold;
+  color:#ffe37e;font-family:Consolas,Segoe UI,Arial,sans-serif;
+  min-width:320px;max-width:800px;max-height:420px;overflow:auto;
+  padding:14px 20px 14px 14px;z-index:100002;transition:.16s;
+  font-size:14.5px;line-height:1.7;display:none;}
+.mnkfnd-paths-side .mnkfnd-path-title {font-weight:700;margin-bottom:7px;font-size:15.3px;color:gold;
+  letter-spacing:1.2px;text-align:left;display:flex;align-items:center;gap:8px;}
+.mnkfnd-paths-side .mnkfnd-paths-actions {display:flex;gap:7px;margin-left:auto;}
+.mnkfnd-paths-search-row {display:flex; align-items:center; margin-bottom:7px; gap:9px;}
+.mnkfnd-paths-search-inp {flex:1; padding:5px 9px; border-radius:8px; border:1.1px solid gold; background:#23272b; color:#ffd34e; font-size:15px;
+  font-family:inherit; outline:none; transition:.13s;}
+.mnkfnd-paths-search-inp:focus { border-color:#ffd34e; box-shadow:0 0 0 2px #ffd34e33;}
+.mnkfnd-paths-list {margin:0;padding:0;list-style:none;}
+.mnkfnd-paths-item {padding:3px 0 3px 0;white-space:pre;word-break:break-all;display:flex;align-items:center;gap:12px;transition:background .14s;
+  border-radius:7px; user-select:none; cursor:pointer;}
+.mnkfnd-paths-item.selected {background:linear-gradient(90deg,#ffd34e55 30%,transparent 100%);
+  outline:1.2px solid #ffd34e;}
+.mnkfnd-paths-item:active {background:#ffd34e36;}
+.mnkfnd-paths-item.match {background:#ffd34e44;font-weight:700;}
+.mnkfnd-paths-id {color:#77fcab;font-size:12.7px;cursor:pointer;user-select:all;
+  border-bottom:1px dashed transparent;transition:border-color .12s;
+  padding:1px 5px;border-radius:5px;background:rgba(50,70,80,0.09);
+  margin-left:auto; min-width:64px;text-align:right;display:inline-block;}
+.mnkfnd-paths-id.copied {border-bottom:1px dashed gold;}
+.mnkfnd-res-name mark {background: #ffd34e; color: #232323; border-radius: 3px; padding: 0 2px; font-weight: bold;}
+@media (max-width:600px) {.mnkfnd-paths-side {right:12px;left:12px;min-width:0;max-width:96vw;}}
+`;
+    document.head.appendChild(style);
+
+    // === UI СОЗДАНИЕ ===
+    let fab = document.createElement('div');
+    fab.className = 'mnkfnd-fab-btn';
+    fab.innerHTML = '🔎';
+    fab.id = 'mnkfnd-fab-btn';
+    document.body.appendChild(fab);
+
+    let collapseBtn = document.createElement('div');
+    collapseBtn.id = 'mnkfnd-quickpanel-collapsed';
+    collapseBtn.title = "Развернуть быстрый переход";
+    collapseBtn.innerHTML = '🌐';
+    collapseBtn.classList.add('mnkfnd-hide');
+    collapseBtn.style.display = 'none';
+    document.body.appendChild(collapseBtn);
+
+    let panel = document.createElement('div');
+    panel.className = 'mnkfnd-panel-gold';
+    panel.innerHTML = `
+      <button class="mnkfnd-close-btn" title="Закрыть" id="mnkfnd-quickpanel-close">×</button>
+      <div class="mnkfnd-header-gold">MonkeFIND</div>
+      <div class="mnkfnd-search-row">
+        <input type="text" class="mnkfnd-search-inp" placeholder="Поиск..." maxlength="60" />
+        <button class="mnkfnd-search-btn">▶</button>
+        <button class="mnkfnd-history-btn" title="История">📖</button>
+      </div>
+      <div class="mnkfnd-results-scroll" id="mnkfnd-results-scroll"></div>
+      <div class="mnkfnd-history-block" id="mnkfnd-hist"></div>
+    `;
+    if (!isPanelOpen) panel.setAttribute('hidden','');
+    document.body.appendChild(panel);
+
+    // --- Окно путей ---
+    let pathsWin = document.createElement('div');
+    pathsWin.className = 'mnkfnd-paths-side';
+    pathsWin.innerHTML = `
+      <div class="mnkfnd-path-title">
+        <span id="mnkfnd-path-game-name"></span>
+        <span class="mnkfnd-paths-actions">
+          <button type="button" id="mnkfnd-copy-paths-btn" style="font-size:14.2px;padding:3px 12px;border-radius:6px;border:1.2px solid gold;background:linear-gradient(90deg,#ffd34e 75%,#ffe37e 100%);color:#232323;font-weight:600;cursor:pointer;box-shadow:0 1.5px 7px #ffd34e22;">Скопировать пути</button>
+          <button type="button" id="mnkfnd-copy-ids-btn" style="font-size:14.2px;padding:3px 12px;border-radius:6px;border:1.2px solid gold;background:linear-gradient(90deg,#ffd34e 75%,#ffe37e 100%);color:#232323;font-weight:600;cursor:pointer;box-shadow:0 1.5px 7px #ffd34e22;">Скопировать ID</button>
+        </span>
+      </div>
+      <div class="mnkfnd-paths-search-row">
+        <input type="text" class="mnkfnd-paths-search-inp" placeholder="Поиск по путям..." maxlength="80" />
+      </div>
+      <ul class="mnkfnd-paths-list"></ul>
+    `;
+    document.body.appendChild(pathsWin);
+
+    // --- Логика путей ---
+    let selectedPathsIdx = [];
+    let lastSelectedIdx = null;
+    let pathsSearchVal = "";
+    let currentPaths = [];
+    function showPaths(paths, game) {
+      pathsWin.querySelector('#mnkfnd-path-game-name').textContent = `Все пути для: "${game}"`;
+      currentPaths = paths;
+      let ul = pathsWin.querySelector('.mnkfnd-paths-list');
+      ul.innerHTML = '';
+      selectedPathsIdx = [];
+      lastSelectedIdx = null;
+      const searchInp = pathsWin.querySelector('.mnkfnd-paths-search-inp');
+      searchInp.value = pathsSearchVal = "";
+      searchInp.oninput = () => {
+        pathsSearchVal = searchInp.value.trim().toLowerCase();
+        renderPathsList(paths, pathsSearchVal);
+      };
+      renderPathsList(paths, "");
+      let maxLen = Math.max(...paths.map(p => (p.path||'').length), 22);
+      pathsWin.style.width = Math.min(12.4 * maxLen, 900) + 'px';
+      pathsWin.style.display = 'block';
+      const copyPathsBtn = pathsWin.querySelector('#mnkfnd-copy-paths-btn');
+      const copyIdsBtn = pathsWin.querySelector('#mnkfnd-copy-ids-btn');
+      copyPathsBtn.onclick = function() {
+        if (!paths.length) return;
+        let idxs = selectedPathsIdx.length ? selectedPathsIdx : [...Array(paths.length).keys()];
+        let txt = idxs.map(i => paths[i].path).join('\n');
+        navigator.clipboard.writeText(txt);
+        let prev = this.textContent;
+        this.textContent = 'Скопировано!';
+        setTimeout(()=>{ this.textContent = prev; }, 1000);
+      };
+      copyIdsBtn.onclick = function() {
+        if (!paths.length) return;
+        let idxs = selectedPathsIdx.length ? selectedPathsIdx : [...Array(paths.length).keys()];
+        let txt = idxs.map(i => paths[i].id).join('\n');
+        navigator.clipboard.writeText(txt);
+        let prev = this.textContent;
+        this.textContent = 'Скопировано!';
+        setTimeout(()=>{ this.textContent = prev; }, 1000);
+      };
+    }
+
+    function renderPathsList(paths, searchVal) {
+      let ul = pathsWin.querySelector('.mnkfnd-paths-list');
+      ul.innerHTML = '';
+      let matches = [];
+      paths.forEach((obj, i) => {
+        let text = obj.path || '';
+        let match = searchVal && text.toLowerCase().includes(searchVal);
+        let li = document.createElement('li');
+        li.className = 'mnkfnd-paths-item' + (match ? ' match' : '');
+        li.setAttribute('data-idx', i);
+        li.innerHTML = `<span class="mnkfnd-paths-text">${highlightMatch(text, searchVal)}</span><span class="mnkfnd-paths-id" title="ID">${obj.id || ''}</span>`;
+        let idEl = li.querySelector('.mnkfnd-paths-id');
+        idEl.onclick = function(e) {
+          e.stopPropagation();
+          navigator.clipboard.writeText(obj.id || '');
+          let prev = idEl.textContent;
+          idEl.textContent = 'Скопировано!';
+          idEl.classList.add('copied');
+          setTimeout(()=>{ idEl.textContent = prev; idEl.classList.remove('copied'); }, 900);
+        };
+        li.querySelector('.mnkfnd-paths-text').ondblclick = function(e) {
+          e.stopPropagation();
+          navigator.clipboard.writeText(obj.path || '');
+          let prev = li.querySelector('.mnkfnd-paths-text').innerHTML;
+          li.querySelector('.mnkfnd-paths-text').textContent = 'Скопировано!';
+          li.classList.add('copied');
+          setTimeout(()=>{
+            li.querySelector('.mnkfnd-paths-text').innerHTML = highlightMatch(obj.path || '', searchVal);
+            li.classList.remove('copied');
+          }, 850);
+        };
+        li.onclick = function(e) {
+          let idx = i;
+          let meta = e.ctrlKey || e.metaKey;
+          let shift = e.shiftKey;
+          if (meta) {
+            if (selectedPathsIdx.includes(idx)) {
+              selectedPathsIdx = selectedPathsIdx.filter(k=>k!==idx);
+            } else {
+              selectedPathsIdx.push(idx);
+            }
+            lastSelectedIdx = idx;
+          } else if (shift && lastSelectedIdx !== null) {
+            let from = Math.min(lastSelectedIdx, idx);
+            let to = Math.max(lastSelectedIdx, idx);
+            selectedPathsIdx = [];
+            for(let k=from; k<=to; ++k) selectedPathsIdx.push(k);
+          } else {
+            selectedPathsIdx = [idx];
+            lastSelectedIdx = idx;
+          }
+          renderPathsSelection();
+        };
+        ul.appendChild(li);
+        if (match) matches.push(li);
+      });
+      renderPathsSelection();
+      if (matches.length) {
+        setTimeout(()=>{
+          let el = matches[0];
+          el.scrollIntoView({block:'nearest', behavior:'smooth'});
+          el.classList.add('selected');
+        }, 80);
+      }
+      if (!paths.length) {
+        ul.innerHTML = `<li class="mnkfnd-paths-item" style="color:#e57d7d;">Нет путей</li>`;
+      }
+    }
+    function highlightMatch(text, searchVal) {
+      if (!searchVal) return text;
+      let re = new RegExp('(' + searchVal.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&') + ')', 'ig');
+      return text.replace(re, '<mark>$1</mark>');
+    }
+    function hidePaths() { pathsWin.style.display = 'none'; }
+    document.addEventListener('mousedown', e => {
+      if (pathsWin.style.display === 'block' && !pathsWin.contains(e.target)) hidePaths();
+    });
+    function renderPathsSelection() {
+      let items = pathsWin.querySelectorAll('.mnkfnd-paths-item');
+      items.forEach((li, i) => {
+        if (selectedPathsIdx.includes(i)) li.classList.add('selected');
+        else li.classList.remove('selected');
+      });
+    }
+    pathsWin.addEventListener('mouseenter', () => { document.body.style.overflow = 'hidden'; });
+    pathsWin.addEventListener('mouseleave', () => { document.body.style.overflow = ''; });
+    pathsWin.addEventListener('wheel', e => {
+      const { scrollTop, scrollHeight, clientHeight } = pathsWin;
+      const atTop = scrollTop === 0;
+      const atBottom = scrollTop + clientHeight >= scrollHeight - 1;
+      if ((e.deltaY < 0 && atTop) || (e.deltaY > 0 && atBottom)) {
+        e.preventDefault();
+        return false;
+      }
+    }, { passive: false });
+
+    // === UI ПЕРЕМЕННЫЕ ===
+    const input = panel.querySelector('.mnkfnd-search-inp');
+    const btn = panel.querySelector('.mnkfnd-search-btn');
+    const closeBtn = panel.querySelector('.mnkfnd-close-btn');
+    const resultsDiv = panel.querySelector('#mnkfnd-results-scroll');
+    const histDiv = panel.querySelector('#mnkfnd-hist');
+    const histBtn = panel.querySelector('.mnkfnd-history-btn');
+
+    // --- История ---
+    async function renderHistory() {
+      histDiv.innerHTML = '';
+      searchHistory = await getStore(LS_HISTORY, []);
+      if (!searchHistory.length) {
+        histDiv.innerHTML = '<div class="mnkfnd-history-empty">История пуста</div>';
+        return;
+      }
+      searchHistory.slice(-15).reverse().forEach(q => {
+        let el = document.createElement('div');
+        el.className = 'mnkfnd-history-item';
+        el.textContent = q;
+        el.onclick = async () => {
+          input.value = q;
+          input.focus();
+          await runSearch(q);
+          setTimeout(()=>toggleHistory(false), 120);
+        };
+        histDiv.appendChild(el);
+      });
+    }
+    async function addToHistory(q) {
+      q = q.trim();
+      if (!q) return;
+      searchHistory = await getStore(LS_HISTORY, []);
+      searchHistory = searchHistory.filter(h => h !== q).concat([q]);
+      if (searchHistory.length > 18) searchHistory = searchHistory.slice(-18);
+      await setStore(LS_HISTORY, searchHistory);
+    }
+    function toggleHistory(force) {
+      isHistoryOpen = typeof force === "boolean" ? force : !isHistoryOpen;
+      if (isHistoryOpen) {
+        renderHistory();
+        histDiv.classList.add('open');
+      } else {
+        histDiv.classList.remove('open');
+      }
+    }
+    histBtn.onclick = e => { e.stopPropagation(); toggleHistory(); };
+    document.addEventListener('mousedown', e => {
+      if (!histDiv.contains(e.target) && !histBtn.contains(e.target)) toggleHistory(false);
+    });
+
+    // --- Подсветка ---
+    function highlightQuery(name, query) {
+      if (!query) return name;
+      let esc = s => s.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+      let words = query.split(/\s+/).filter(w => w.length > 1);
+      let re = words.length ? new RegExp('(' + words.map(esc).join('|') + ')', 'ig') : null;
+      return re ? name.replace(re, '<mark>$1</mark>') : name;
+    }
+
+    // --- РЕНДЕР ВСЕХ РЕЗУЛЬТАТОВ ---
+    function renderAllResults(showFast, showDeep) {
+      resultsDiv.innerHTML = '';
+      let q = input.value.trim();
+      // Сохраняем актуальные результаты, чтобы не терялись после кликов и смены вкладок
+      fastResults = showFast;
+      deepResults = showDeep;
+      setStore(LS_LAST_RESULTS, {fast: fastResults, deep: deepResults});
+      setStore(LS_LAST_QUERY, input.value);
+      function addSection(title, arr, type) {
+        let section = document.createElement('div');
+        section.innerHTML = `<div class="mnkfnd-section-title">${title}</div>`;
+        arr.forEach(obj => {
+          let item = document.createElement('div');
+          item.className = 'mnkfnd-res-item';
+          item._rowNum = obj.num;
+          let loader = (loadingRowNum === obj.num) ? '<span style="font-size:19px; color:#ffd34e; margin-left:4px;">…</span>' : '';
+          item.innerHTML = `
+            <span class="mnkfnd-res-name" title="${obj.name}">${highlightQuery(obj.name, q)}${loader}</span>
+            <span class="mnkfnd-res-id" title="Digi ID">${obj.id}</span>
+          `;
+          let nameEl = item.querySelector('.mnkfnd-res-name');
+          let idEl = item.querySelector('.mnkfnd-res-id');
+          nameEl.onclick = function(e) {
+            e.stopPropagation();
+            if (e.ctrlKey || e.metaKey) {
+              navigator.clipboard.writeText(obj.name);
+              nameEl.classList.add('copied');
+              nameEl.textContent = 'Скопировано!';
+              setTimeout(()=>{ nameEl.innerHTML = highlightQuery(obj.name, q) + loader; nameEl.classList.remove('copied'); }, 800);
+            } else {
+              hidePaths();
+              if (obj.num && obj.name) {
+                loadingRowNum = obj.num;
+                renderAllResults(fastResults, deepResults);
+                fetch(`${API_BASE}?paths=1&row=${encodeURIComponent(obj.num)}&game=${encodeURIComponent(obj.name)}`)
+                  .then(r=>r.json())
+                  .then(res=>{
+                    showPaths(res.paths || [], obj.name);
+                    loadingRowNum = null;
+                    renderAllResults(fastResults, deepResults);
+                  })
+                  .catch(()=>{
+                    showPaths([], obj.name);
+                    loadingRowNum = null;
+                    renderAllResults(fastResults, deepResults);
+                  });
+              }
+            }
+          };
+          idEl.onclick = function(e) {
+            e.stopPropagation();
+            navigator.clipboard.writeText(obj.id);
+            idEl.classList.add('copied');
+            idEl.textContent = '✔';
+            setTimeout(()=>{ idEl.textContent = obj.id; idEl.classList.remove('copied'); }, 800);
+          };
+          item.onmouseenter = () => { item.classList.add('mnkfnd-hovered'); };
+          item.onmouseleave = () => { item.classList.remove('mnkfnd-hovered'); };
+          section.appendChild(item);
+        });
+        resultsDiv.appendChild(section);
+      }
+      addSection('Быстрый поиск:', fastResults, 'fast');
+      addSection('Глубокий поиск:', deepResults, 'deep');
+    }
+
+    // --- ПОИСК ---
+    async function runSearch(val) {
+      val = val || input.value.trim();
+      if (!val) return;
+      await addToHistory(val);
+      await setStore(LS_LAST_QUERY, val);
+
+      fastResults = [];
+      deepResults = [];
+      loadingRowNum = null;
+      renderAllResults([], []);
+      resultsDiv.innerHTML = `
+        <div class="mnkfnd-section-title" style="color:#ffe37e;">Быстрый поиск...</div>
+        <div class="mnkfnd-section-title" style="color:#ffe37e;">Глубокий поиск...</div>
+      `;
+      GM_xmlhttpRequest({
+        method: "GET",
+        url: API_BASE + "?query=" + encodeURIComponent(val),
+        onload: async resp => {
+          try {
+            let res = JSON.parse(resp.responseText);
+            fastResults = (res.results || []).slice(0,5);
+          } catch { fastResults = []; }
+          renderAllResults(fastResults, deepResults);
+        }
+      });
+      GM_xmlhttpRequest({
+        method: "GET",
+        url: API_BASE + "?deep=" + encodeURIComponent(val),
+        onload: async resp => {
+          try {
+            let res = JSON.parse(resp.responseText);
+            deepResults = (res.results || []).slice(0,5);
+          } catch { deepResults = []; }
+          renderAllResults(fastResults, deepResults);
+        }
+      });
+    }
+
+    // --- ПАНЕЛЬ ---
+    function setPanelOpenState(open) {
+      isPanelOpen = open;
+      setStore(LS_PANEL_STATE, open ? 'open' : 'collapsed');
+      if (open) {
+        panel.hidden = false;
+        fab.setAttribute('hidden','');
+        collapseBtn.classList.add('mnkfnd-hide');
+        collapseBtn.style.display = 'none';
+        setTimeout(()=>{ input.focus(); }, 60);
+        if (input.value) {
+          renderAllResults(fastResults, deepResults);
+        } else if (lastQuery) {
+          input.value = lastQuery;
+          renderAllResults(fastResults, deepResults);
+        }
+      } else {
+        panel.hidden = true;
+        fab.setAttribute('hidden','');
+        collapseBtn.style.display = '';
+        setTimeout(()=>{ collapseBtn.classList.remove('mnkfnd-hide'); }, 24);
+        hidePaths();
+      }
+    }
+    fab.onclick = () => setPanelOpenState(true);
+    closeBtn.onclick = () => setPanelOpenState(false);
+    collapseBtn.onclick = function() {
+      collapseBtn.classList.add('mnkfnd-hide');
+      setTimeout(()=>{
+        collapseBtn.style.display = 'none';
+        setPanelOpenState(true);
+      }, 270);
+    };
+
+    // --- Запуск на старте ---
+    if (isPanelOpen) {
+      panel.hidden = false;
+      fab.setAttribute('hidden','');
+      collapseBtn.style.display = 'none';
+      setTimeout(()=>{ input.focus(); }, 60);
+      if (lastQuery) {
+        input.value = lastQuery;
+        renderAllResults(fastResults, deepResults);
+      }
+    } else {
+      panel.hidden = true;
+      fab.setAttribute('hidden','');
+      collapseBtn.style.display = '';
+      setTimeout(()=>{ collapseBtn.classList.remove('mnkfnd-hide'); }, 24);
+    }
+
+    btn.onclick = () => runSearch();
+    input.onkeydown = e => { if (e.key === 'Enter') runSearch(); };
+
+    // --- Скролл только внутри результатов ---
+    resultsDiv.addEventListener('mouseenter', () => { document.body.style.overflow = 'hidden'; });
+    resultsDiv.addEventListener('mouseleave', () => { document.body.style.overflow = ''; });
+    resultsDiv.addEventListener('wheel', e => {
+      const { scrollTop, scrollHeight, clientHeight } = resultsDiv;
+      const atTop = scrollTop === 0;
+      const atBottom = scrollTop + clientHeight >= scrollHeight - 1;
+      if ((e.deltaY < 0 && atTop) || (e.deltaY > 0 && atBottom)) {
+        e.preventDefault();
+        return false;
+      }
+    }, { passive: false });
+  })();
+
+})();
+
