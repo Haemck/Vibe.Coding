@@ -1,18 +1,23 @@
 // ==UserScript==
-// @name         Bananza Mailz — Быстрая авторассылка (НЕЗАВИСИМЫЙ! SPA FIXED)
+// @name         Bananza Mailz — Детальное логирование (resume debug)
 // @namespace    http://tampermonkey.net/
-// @version      4.2
-// @description  Bananza Mailz — авторассылка, полностью отдельная кнопка 🐒, стиль и логика не пересекается с Banana GO! Кнопка не исчезает после переходов по страницам!
+// @version      4.9
+// @description  Bananza Mailz — авторассылка, кнопка продолжить после F5 + детальное логирование каждого шага для отладки проблем resume. Защита от случайной рассылки через подтверждение.
 // @author       vibe.coding
 // @match        https://my.digiseller.ru/*
 // @grant        GM_xmlhttpRequest
-// @updateURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/Bananza%20Mailz
-// @downloadURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/Bananza%20Mailz
-
+// @updateURL    https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/Bananza%20Mailz
+// @downloadURL  https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/Bananza%20Mailz
 // ==/UserScript==
 
 (function() {
     'use strict';
+
+    // --- Логирование для отладки ---
+    function bananzaDebugLog(...args) {
+        // Можно легко фильтровать по [BananzaMailz]
+        console.log('[BananzaMailz]', ...args);
+    }
 
     // --- Настройки ---
     const APPS_SCRIPT_API_URL = 'https://script.google.com/macros/s/AKfycbzKBKQ7OkXV_nEpdvP4y5QZj6lHFQg2p8oNE_gwCU_B3MPFjyqWDbQPNXq7OeaP74Ya/exec';
@@ -22,39 +27,56 @@
     const BANANZA_SEND_DELAY_MS = 200;
 
     let sellers = [], message = '', logs = [], errors = [];
-    let uniqueMessages = [];
     let isSending = false, monkeProgress = 0, cancel = false, pausedAt = 0;
     let lastUpdate = 0;
     let bananzaPanel = null;
     let monkeBtn = null;
 
-    // --- State ---
+    // --- Сохраняем состояние в localStorage ---
     function saveBananzaStore() {
-        const store = { sellers, message, logs, errors, uniqueMessages, isSending, monkeProgress, cancel, pausedAt, lastUpdate: Date.now() };
+        bananzaDebugLog('saveBananzaStore()', { sellers, isSending, monkeProgress, pausedAt });
+        const store = { sellers, message, logs, errors, isSending, monkeProgress, cancel, pausedAt, lastUpdate: Date.now() };
         localStorage.setItem(BANANZA_STORE, JSON.stringify(store));
     }
+    // --- Загружаем состояние из localStorage ---
     function loadBananzaStore() {
+        bananzaDebugLog('loadBananzaStore()');
         let store = null;
         try { store = JSON.parse(localStorage.getItem(BANANZA_STORE) || ''); } catch {}
+        bananzaDebugLog('store loaded:', store);
         if (store && typeof store === 'object' && store.sellers && Array.isArray(store.sellers)) {
             sellers = store.sellers || [];
             message = store.message || '';
             logs = store.logs || [];
             errors = store.errors || [];
-            uniqueMessages = store.uniqueMessages || [];
             isSending = !!store.isSending;
             monkeProgress = store.monkeProgress || 0;
-            cancel = !!store.cancel;
+            cancel = false;
             pausedAt = store.pausedAt || 0;
             lastUpdate = store.lastUpdate || 0;
+
+            // --- Исправление: если рассылка была оборвана F5 (isSending==true, pausedAt==0, но monkeProgress > 0) ---
+            if (isSending && pausedAt === 0 && monkeProgress > 0 && monkeProgress < sellers.length) {
+                bananzaDebugLog('Detected interrupted mailing (F5), auto-pausing at:', monkeProgress);
+                isSending = false;
+                pausedAt = monkeProgress;
+            }
+            // Если рассылка полностью закончена (monkeProgress === sellers.length) — сбрасываем состояние
+            if (monkeProgress >= sellers.length) {
+                isSending = false;
+                pausedAt = 0;
+            }
+            bananzaDebugLog('restored vars:', { sellers, isSending, monkeProgress, pausedAt });
         }
     }
+    // --- Проверка свежести состояния ---
     function stateIsFresh() {
         return !!sellers.length && (Date.now() - lastUpdate < BANANZA_TTL_MS);
     }
 
-    // --- UI ---
+    // --- Кнопка-обезьяна ---
     function createMonkeyBtn() {
+        bananzaDebugLog('createMonkeyBtn()');
         if (document.getElementById('bananza-monke-btn')) return;
         monkeBtn = document.createElement('div');
         monkeBtn.id = 'bananza-monke-btn';
@@ -62,57 +84,36 @@
         monkeBtn.innerHTML = '🐒';
         monkeBtn.className = 'bananza-fab bananza-fab-show';
         monkeBtn.onclick = function() {
+            bananzaDebugLog('monkeBtn clicked');
             hideMonkeyBtn(() => showBananzaPanel());
         };
         document.body.appendChild(monkeBtn);
-
-        // Автооткрытие, если было открыто
-        if (localStorage.getItem(BANANZA_STATE) === '1') {
-            monkeBtn.style.opacity = '0'; // мгновенно убираем кнопку если было открыто
-            showBananzaPanel();
-        }
     }
-
     function hideMonkeyBtn(cb) {
+        bananzaDebugLog('hideMonkeyBtn()');
         if (!monkeBtn) return;
         monkeBtn.classList.remove('bananza-fab-show');
         monkeBtn.classList.add('bananza-fab-hide');
         setTimeout(() => {
-            if (monkeBtn && monkeBtn.parentNode) monkeBtn.style.display = 'none';
+            monkeBtn.style.display = 'none';
+            monkeBtn.style.opacity = '0';
             if (cb) cb();
         }, 270);
     }
     function showMonkeyBtn() {
+        bananzaDebugLog('showMonkeyBtn()');
         if (!monkeBtn) createMonkeyBtn();
-        if (monkeBtn) {
-            monkeBtn.style.display = '';
-            setTimeout(() => {
-                monkeBtn.classList.remove('bananza-fab-hide');
-                monkeBtn.classList.add('bananza-fab-show');
-            }, 10);
-        }
+        monkeBtn.style.display = '';
+        monkeBtn.style.opacity = '';
+        setTimeout(() => {
+            monkeBtn.classList.remove('bananza-fab-hide');
+            monkeBtn.classList.add('bananza-fab-show');
+        }, 10);
     }
 
-    // --- SPA/DOM восстановление кнопки ---
-    function ensureMonkeyBtn() {
-        // Если кнопки нет в DOM — пересоздаём
-        if (!document.getElementById('bananza-monke-btn')) {
-            monkeBtn = null;
-            createMonkeyBtn();
-        }
-    }
-    // Следим за появлением/удалением DOM (SPA переходы)
-    let bananzaObs = new MutationObserver(() => {
-        ensureMonkeyBtn();
-    });
-    bananzaObs.observe(document.body, { childList: true, subtree: true });
-
-    // При полной загрузке тоже проверяем
-    window.addEventListener('load', () => {
-        setTimeout(ensureMonkeyBtn, 120);
-    });
-
+    // --- Панель рассылки ---
     function showBananzaPanel(forceReload) {
+        bananzaDebugLog('showBananzaPanel()', { forceReload, bananzaPanelExists: !!bananzaPanel });
         if (bananzaPanel && document.body.contains(bananzaPanel)) {
             renderBananzaPanel();
             return;
@@ -125,7 +126,7 @@
                 <span style="font-size: 26px; vertical-align: -3px;">🍌</span>
                 <span class="bananza-title">Bananza Mailz</span>
                 <button id="bananza-mailz-reload" title="Обновить список" class="bananza-action-btn">⟳</button>
-                <button id="bananza-mailz-close" title="Свернуть окно" class="bananza-action-btn" style="margin-left:auto;">✖</button>
+                <button id="bananza-mailz-close" title="Свернуть окно" class="bananza-mailz-close" style="margin-left:auto;">✖</button>
             </div>
             <div class="bananza-info">
                 <b>Продавцов:</b> <span style="color:#f7c926" id="bananza-count">…</span>
@@ -144,23 +145,45 @@
         positionBananzaPanel();
         window.addEventListener('resize', positionBananzaPanel);
 
-        document.getElementById('bananza-mailz-close').onclick = hideBananzaPanel;
-        document.getElementById('bananza-mailz-reload').onclick = ()=>loadBananzaData(true);
+        document.getElementById('bananza-mailz-close').onclick = function() {
+            bananzaDebugLog('bananza-mailz-close clicked');
+            hideBananzaPanel();
+        };
+        document.getElementById('bananza-mailz-reload').onclick = function() {
+            bananzaDebugLog('bananza-mailz-reload clicked');
+            loadBananzaData(true);
+        };
+
+        // --- Кнопка запуска рассылки ---
+        document.getElementById('bananza-go-start-btn').onclick = ()=>{
+            bananzaDebugLog('Start button clicked', { isSending, pausedAt });
+            if (!isSending) {
+                // --- Включаем режим подтверждения ---
+                window._bananzaNeedConfirm = true;
+                renderBananzaPanel();
+            }
+        };
+        document.getElementById('bananza-go-cancel-btn').onclick = ()=>{
+            bananzaDebugLog('Cancel button clicked');
+            cancel = true;
+        };
+
         renderBananzaPanel();
         localStorage.setItem(BANANZA_STATE, '1');
         if (forceReload || !stateIsFresh()) loadBananzaData();
     }
     function hideBananzaPanel() {
+        bananzaDebugLog('hideBananzaPanel()');
         if (bananzaPanel && document.body.contains(bananzaPanel)) {
             bananzaPanel.classList.remove('bananza-panel-show');
             bananzaPanel.classList.add('bananza-panel-hide');
             setTimeout(() => {
                 if (bananzaPanel.parentNode) bananzaPanel.parentNode.removeChild(bananzaPanel);
                 bananzaPanel = null;
-                setTimeout(showMonkeyBtn, 100); // Плавное возвращение кнопки
+                showMonkeyBtn();
             }, 320);
         } else {
-            setTimeout(showMonkeyBtn, 100);
+            showMonkeyBtn();
         }
         localStorage.setItem(BANANZA_STATE, '0');
         window.removeEventListener('resize', positionBananzaPanel);
@@ -168,19 +191,74 @@
     function positionBananzaPanel() {
         if (!bananzaPanel) return;
         bananzaPanel.style.position = 'fixed';
-        bananzaPanel.style.right = '34px';
-        bananzaPanel.style.bottom = '30px';
+        bananzaPanel.style.right = '134px';
+        bananzaPanel.style.bottom = '15px';
         bananzaPanel.style.zIndex = '1000999';
     }
+
+    // --- Основная функция отрисовки панели ---
     function renderBananzaPanel() {
+        bananzaDebugLog('renderBananzaPanel()', { sellersLength: sellers.length, isSending, pausedAt });
+        if (!bananzaPanel) { bananzaDebugLog('No bananzaPanel'); return; }
         document.getElementById('bananza-count').textContent = sellers.length;
         let msgEl = document.getElementById('bananza-go-msg');
         if (msgEl) msgEl.textContent = message || 'Сообщение не указано!';
         let startBtn = document.getElementById('bananza-go-start-btn');
         let cancelBtn = document.getElementById('bananza-go-cancel-btn');
-        startBtn.disabled = isSending || !sellers.length;
-        startBtn.textContent = isSending ? 'Продолжить рассылку' : (pausedAt > 0 ? 'Продолжить рассылку' : 'БАНАНЫ ВСЕМ!');
-        cancelBtn.style.display = isSending ? '' : 'none';
+
+        // --- Защита от случайной рассылки: показываем подтверждение ---
+        let confirmDiv = document.getElementById('bananza-go-confirm-wrap');
+        if (confirmDiv) confirmDiv.remove(); // Удаляем старое подтверждение, если есть
+        if (window._bananzaNeedConfirm) {
+            // Создаём контейнер для кнопок подтверждения
+            confirmDiv = document.createElement('div');
+            confirmDiv.id = 'bananza-go-confirm-wrap';
+            confirmDiv.style.display = 'flex';
+            confirmDiv.style.gap = '12px';
+            confirmDiv.style.marginBottom = '7px';
+            // Кнопка Подтвердить
+            let confirmBtn = document.createElement('button');
+            confirmBtn.className = 'ds-bananza-glow-btn ds-yellow'; // теперь жёлтая
+            confirmBtn.textContent = 'Подтвердить';
+            confirmBtn.onclick = function() {
+                window._bananzaNeedConfirm = false;
+                renderBananzaPanel();
+                bananzaDebugLog('Подтверждение рассылки');
+                startBananzaSend(pausedAt > 0 ? pausedAt : 0);
+            };
+            // Кнопка Обновить данные
+            let reloadBtn = document.createElement('button');
+            reloadBtn.className = 'ds-bananza-glow-btn ds-grey';
+            reloadBtn.textContent = 'Обновить данные';
+            reloadBtn.onclick = function() {
+                window._bananzaNeedConfirm = false;
+                renderBananzaPanel();
+                loadBananzaData(true);
+            };
+            confirmDiv.appendChild(confirmBtn);
+            confirmDiv.appendChild(reloadBtn);
+            // Вставляем перед логом
+            let actions = document.querySelector('.bananza-actions');
+            if (actions) actions.parentNode.insertBefore(confirmDiv, actions.nextSibling);
+            // Скрываем обычные кнопки
+            startBtn.style.display = 'none';
+            cancelBtn.style.display = 'none';
+        } else {
+            // Обычный режим — показываем стандартные кнопки
+            startBtn.style.display = '';
+            if (pausedAt > 0 && !isSending) {
+                startBtn.disabled = false;
+                startBtn.textContent = 'Продолжить рассылку';
+            } else if (isSending) {
+                startBtn.disabled = true;
+                startBtn.textContent = 'Продолжить рассылку';
+            } else {
+                startBtn.disabled = !sellers.length;
+                startBtn.textContent = 'БАНАНЫ ВСЕМ!';
+            }
+            cancelBtn.style.display = isSending ? '' : 'none';
+        }
+        // --- Прогресс и лог ---
         let prog = '';
         if (isSending || pausedAt > 0) {
             let done = Math.max(pausedAt, monkeProgress, 0);
@@ -190,36 +268,25 @@
         }
         document.getElementById('bananza-go-progress').innerHTML = prog;
         document.getElementById('bananza-go-log').innerHTML = logs.map(e=>e).join('') || `<span style="color:#777">Лог пуст</span>`;
-        startBtn.onclick = ()=>{ if (!isSending) startBananzaSend(pausedAt > 0 ? pausedAt : 0); };
-        cancelBtn.onclick = ()=>{ cancel = true; };
         saveBananzaStore();
     }
+
+    // --- Логика логирования и загрузки данных ---
     function logBananza(msg, error = false) {
+        bananzaDebugLog('logBananza:', msg, error);
         logs.push(`<div style="color:${error ? '#f98b8b' : '#e1f8a7'};">${msg}</div>`);
         renderBananzaPanel();
         let logDiv = document.getElementById('bananza-go-log');
         if (logDiv) logDiv.scrollTop = logDiv.scrollHeight;
     }
     function loadBananzaData(forceReload) {
+        bananzaDebugLog('loadBananzaData()', { forceReload });
         if (!bananzaPanel) return;
         document.getElementById('bananza-count').textContent = '…';
         document.getElementById('bananza-go-msg').textContent = 'Загрузка данных...';
         fetch(APPS_SCRIPT_API_URL + '?action=get_data').then(r=>r.json()).then(data=>{
-            // Данные приходят в формате { sellers, message, logs, ... }
-            // Мы расширяем и добавляем uniqueMessages
-            sellers = [];
-            uniqueMessages = [];
-            if (Array.isArray(data.sellers)) {
-                data.sellers.forEach((id, i) => {
-                    sellers.push(id);
-                    if (data.logs && Array.isArray(data.logs)) {
-                        uniqueMessages.push(data.logs[i] || "");
-                    } else {
-                        uniqueMessages.push("");
-                    }
-                });
-            }
-            message = data.message || '';
+            sellers = Array.isArray(data.sellers) ? data.sellers : [];
+            message = (data.message || '').trim();
             logs = [];
             errors = [];
             monkeProgress = 0;
@@ -227,6 +294,7 @@
             pausedAt = 0;
             isSending = false;
             lastUpdate = Date.now();
+            bananzaDebugLog('Data loaded from API', { sellers, message });
             renderBananzaPanel();
             saveBananzaStore();
         }).catch(e=>{
@@ -235,12 +303,49 @@
         });
     }
 
-    // === Быстрая рассылка с паузой и продолжением, с поддержкой уникальных сообщений ===
+    // --- Основная логика рассылки ---
     async function startBananzaSend(startIdx = 0) {
+        bananzaDebugLog('startBananzaSend() called', { startIdx, isSending, pausedAt });
         isSending = true;
         cancel = false;
         renderBananzaPanel();
         logBananza(`🍌 Запуск рассылки с позиции ${startIdx+1} из ${sellers.length}...`);
+
+        // --- Ревизия двух предыдущих перед startIdx ---
+        let checkFrom = Math.max(0, startIdx - 2);
+        for (let j = checkFrom; j < startIdx; ++j) {
+            const id = String(sellers[j].id || sellers[j]);
+            let uniqueMsg = (sellers[j].message || '').trim();
+            let globalMsg = (message || '').trim();
+            let toSend = uniqueMsg ? uniqueMsg : globalMsg;
+            if (!toSend) {
+                logBananza(`[${j+1}] ID ${id}: нет сообщения, пропущено (ревизия)`, true);
+                continue;
+            }
+            logBananza(`[${j+1}] ID ${id}: ревизия последнего сообщения...`);
+            try {
+                let lastMsg = await getLastSellerMsg(id);
+                let normLast = (lastMsg||'').trim().replace(/\s+/g,' ');
+                let normSent = (toSend||'').trim().replace(/\s+/g,' ');
+                if (normLast === normSent) {
+                    logBananza(`[${j+1}] ID ${id}: уже отправлено (ревизия)`, false);
+                    await sendLogToSheet(id, 'Уже отправлено (ревизия)', `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${id}`);
+                } else {
+                    logBananza(`[${j+1}] ID ${id}: отправляю повторно (ревизия)...`);
+                    await sendMsgToSeller(id, toSend, j+1);
+                }
+            } catch(e) {
+                logBananza(`[${j+1}] ID ${id}: ошибка при ревизии: ${e.message||e}`, true);
+                errors.push(id);
+                await sendLogToSheet(id, 'Ошибка ревизии: ' + (e.message||e));
+            }
+            monkeProgress = j+1;
+            pausedAt = 0;
+            renderBananzaPanel();
+            saveBananzaStore();
+            if (j < startIdx-1) await sleep(BANANZA_SEND_DELAY_MS);
+        }
+
         for (let i = startIdx; i < sellers.length; ++i) {
             if (cancel) {
                 pausedAt = i;
@@ -250,29 +355,25 @@
                 saveBananzaStore();
                 return;
             }
-            const id = String(sellers[i]);
-            // -- выбираем индивидуальное сообщение если оно есть, иначе общее --
-            let uniqMsg = (uniqueMessages[i] || "").trim();
-            let msgToSend = "";
-            if (uniqMsg) {
-                msgToSend = uniqMsg;
-            } else if (message && message.trim()) {
-                msgToSend = message.trim();
-            } else {
-                logBananza(`[${i+1}] ID ${id}: пропущен (нет сообщения)!`, true);
+            const id = String(sellers[i].id || sellers[i]);
+            let uniqueMsg = (sellers[i].message || '').trim();
+            let globalMsg = (message || '').trim();
+            let toSend = uniqueMsg ? uniqueMsg : globalMsg;
+            if (!toSend) {
+                logBananza(`[${i+1}] ID ${id}: нет сообщения, пропущено`, true);
                 continue;
             }
             logBananza(`[${i+1}] ID ${id}: проверяю последнее сообщение...`);
             try {
                 let lastMsg = await getLastSellerMsg(id);
                 let normLast = (lastMsg||'').trim().replace(/\s+/g,' ');
-                let normSent = (msgToSend||'').trim().replace(/\s+/g,' ');
+                let normSent = (toSend||'').trim().replace(/\s+/g,' ');
                 if (normLast === normSent) {
                     logBananza(`[${i+1}] ID ${id}: уже отправлено, пропускаем!`);
                     await sendLogToSheet(id, 'Уже отправлено', `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${id}`);
                 } else {
                     logBananza(`[${i+1}] ID ${id}: отправляю...`);
-                    await sendMsgToSeller(id, msgToSend, i+1);
+                    await sendMsgToSeller(id, toSend, i+1);
                 }
             } catch(e) {
                 logBananza(`[${i+1}] ID ${id}: ошибка: ${e.message||e}`, true);
@@ -295,8 +396,9 @@
         saveBananzaStore();
     }
 
-    // === Запрос (POST) — отправка сообщения, потом GET — проверка ===
+    // --- Отправка сообщения продавцу ---
     function sendMsgToSeller(id, msg, idx) {
+        bananzaDebugLog('sendMsgToSeller()', { id, idx, msg });
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method: "POST",
@@ -304,6 +406,7 @@
                 headers: { "Content-Type": "application/x-www-form-urlencoded" },
                 data: `txt_Message=${encodeURIComponent(msg)}`,
                 onload: function(response) {
+                    bananzaDebugLog('sendMsgToSeller response', { status: response.status, finalUrl: response.finalUrl });
                     if (response.status === 200 && !response.finalUrl.includes('login.asp')) {
                         setTimeout(() => {
                             getLastSellerMsg(id).then(lastMsg => {
@@ -331,19 +434,22 @@
                     }
                 },
                 onerror: function() {
+                    bananzaDebugLog('sendMsgToSeller onerror');
                     reject(new Error('Ошибка сети или CORS'));
                 }
             });
         });
     }
 
-    // === Получить последнее сообщение через GET, парсим HTML ===
+    // --- Получение последнего сообщения продавцу ---
     function getLastSellerMsg(id) {
+        bananzaDebugLog('getLastSellerMsg()', { id });
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method: "GET",
                 url: `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${id}`,
                 onload: function(response) {
+                    bananzaDebugLog('getLastSellerMsg response', { status: response.status });
                     if (response.status === 200) {
                         let temp = document.createElement('div');
                         temp.innerHTML = response.responseText;
@@ -362,19 +468,23 @@
                     }
                 },
                 onerror: function() {
+                    bananzaDebugLog('getLastSellerMsg onerror');
                     reject(new Error("Ошибка сети или CORS"));
                 }
             });
         });
     }
 
+    // --- Лог в Google Sheet ---
     function sendLogToSheet(id, log, url) {
+        bananzaDebugLog('sendLogToSheet()', { id, log, url });
         fetch(APPS_SCRIPT_API_URL + `?action=set_log&id=${encodeURIComponent(id)}&log=${encodeURIComponent(log)}${url?`&url=${encodeURIComponent(url)}`:''}`)
         .then(r=>r.json()).catch(()=>{});
     }
+    // --- Пауза ---
     function sleep(ms) { return new Promise(res=>setTimeout(res,ms)); }
 
-    // --- Scroll
+    // --- Красивый скролл для логов ---
     function enableVibeScroll(id) {
         const el = typeof id === "string" ? document.getElementById(id) : id;
         if (!el) return;
@@ -393,7 +503,7 @@
         }, { passive: false });
     }
 
-    // --- CSS ---
+    // --- Стили ---
     let style = document.createElement('style');
     style.textContent = `
 .bananza-fab {
@@ -414,6 +524,13 @@
     z-index: 1000999;
     transition: opacity 0.25s, transform 0.23s;
 }
+.bananza-mailz-close{
+    position: absolute; top: 14px; right: 14px; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
+    background: rgba(38,38,42,0.87); border-radius: 25%; border: 2px solid gold; color: gold;
+    font-size: 22px; font-weight: bold; cursor: pointer; opacity: 0.88; z-index:10; transition: background .15s, opacity .15s, box-shadow .15s;
+    box-shadow: 0 3px 14px #0005;
+}
+#bananza-mailz-close:hover { opacity: 1; background: #2c2f38; box-shadow: 0 6px 26px #0008;}
 .bananza-fab-show {
     opacity: 1;
     pointer-events: auto;
@@ -524,7 +641,10 @@
 .ds-bananza-glow-btn { transition: box-shadow 0.16s, filter 0.13s; font-size: 16px; padding: 7px 19px 7px 16px; border-radius:8px;min-width:140px;font-weight:600;}
 .ds-green { background: #bfff79; color: #212; border: none;}
 .ds-green:hover { box-shadow: 0 0 18px 0 #8be881cc, 0 1px 8px #cafcd1b0;}
-.ds-grey { background: #444; color: #ffe37e; border:none;}
+.ds-yellow { background: #ffe37e; color: #222; border: none; }
+.ds-yellow:hover { box-shadow: 0 0 18px 0 #ffe37ecc, 0 1px 8px #fff7c1b0; filter: brightness(1.08); }
+.ds-grey { background: #444; color: #ffe37e; border:none; }
+.ds-grey:hover { background: #555; color: #fffbe0; box-shadow: 0 0 10px #ffe37e55; }
 .ds-bananza-glow-btn:disabled { opacity:.74; filter:grayscale(0.23);}
 @keyframes vibeGrowIn { from { opacity:0; transform:scale(0.91) translateY(34px);} to { opacity:1; transform:none; } }
 `;
@@ -532,6 +652,14 @@
 
     // --- Bootstrap ---
     loadBananzaStore();
+    bananzaDebugLog('After loadBananzaStore', { sellers, isSending, monkeProgress, pausedAt });
     setTimeout(createMonkeyBtn, 40);
+    setTimeout(() => {
+        bananzaDebugLog('Bootstrap check:', { pausedAt, monkeProgress, sellersLength: sellers.length });
+        if (pausedAt > 0 && monkeProgress < sellers.length) {
+            bananzaDebugLog('Auto-opening panel due to paused state');
+            showBananzaPanel();
+        }
+    }, 100);
 
 })();
