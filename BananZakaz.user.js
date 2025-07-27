@@ -6,8 +6,8 @@
 // @author       Твоя няшка
 // @match        https://my.digiseller.ru/asp/inv_of_buyer.asp*
 // @grant        GM_setClipboard
-// @updateURL    https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/BananZakaz
-// @downloadURL  https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/BananZakaz
+// @updateURL    https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/BananZakaz.user.js
+// @downloadURL  https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/BananZakaz.user.js
 // ==/UserScript==
 
 (function () {
