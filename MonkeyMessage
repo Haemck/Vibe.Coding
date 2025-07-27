@@ -8,8 +8,8 @@
 // @grant        GM_xmlhttpRequest
 // @connect      my.digiseller.ru
 // @run-at       document-end
-// @updateURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/Banana%20GO
-// @downloadURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/Banana%20GO
+// @updateURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/MonkeyMessage
+// @downloadURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/MonkeyMessage
 // ==/UserScript==
 
 (function() {
