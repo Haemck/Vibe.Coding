@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Bananza Mailz — Детальное логирование (resume debug)
+// @name         Digiseler: Bananza Mailz
 // @namespace    http://tampermonkey.net/
-// @version      4.9
+// @version      5.0
 // @description  Bananza Mailz — авторассылка, кнопка продолжить после F5 + детальное логирование каждого шага для отладки проблем resume. Защита от случайной рассылки через подтверждение.
 // @author       vibe.coding
 // @match        https://my.digiseller.ru/*
@@ -478,7 +478,14 @@
     // --- Лог в Google Sheet ---
     function sendLogToSheet(id, log, url) {
         bananzaDebugLog('sendLogToSheet()', { id, log, url });
-        fetch(APPS_SCRIPT_API_URL + `?action=set_log&id=${encodeURIComponent(id)}&log=${encodeURIComponent(log)}${url?`&url=${encodeURIComponent(url)}`:''}`)
+        // Если есть ссылка, формируем формулу HYPERLINK для Google Sheets
+        let logValue = log;
+        if (url) {
+            // Экранируем кавычки в тексте сообщения
+            let safeLog = String(log).replace(/"/g, '""');
+            logValue = `=HYPERLINK("${url}";"${safeLog}")`;
+        }
+        fetch(APPS_SCRIPT_API_URL + `?action=set_log&id=${encodeURIComponent(id)}&log=${encodeURIComponent(logValue)}`)
         .then(r=>r.json()).catch(()=>{});
     }
     // --- Пауза ---
