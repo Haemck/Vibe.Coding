@@ -7,8 +7,8 @@
 // @match        https://my.digiseller.ru/*
 // @run-at       document-start
 // @grant        none
-// @updateURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/LogoDelete
-// @downloadURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/LogoDelete
+// @updateURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/LogoDelete.user.js
+// @downloadURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/LogoDelete.user.js
 // ==/UserScript==
 
 (function() {
