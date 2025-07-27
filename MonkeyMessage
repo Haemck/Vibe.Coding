@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         DigiSeller Chat Vibe Bubbles + Никнейм продавца-кнопка + Эффект нажатия
+// @name         DigiSeller: MonkeBubbles
 // @namespace    http://tampermonkey.net/
 // @version      2.57
 // @description  Красивый интерфейс: bubble, лайтбокс, две кнопки поверх [новое сообщение]/[отметить прочитанным] + кнопка-ник продавца (копировать ник или seller_id). Теперь с эффектом нажатия!
