@@ -8,8 +8,8 @@
 // @grant        GM_xmlhttpRequest
 // @connect      my.digiseller.ru
 // @run-at       document-end
-// @updateURL    https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/MonkeBubbles
-// @downloadURL  https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/MonkeBubbles
+// @updateURL    https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/MonkeBubbles.user.js
+// @downloadURL  https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/MonkeBubbles.user.js
 // ==/UserScript==
 
 (function() {
