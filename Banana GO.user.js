@@ -9,8 +9,8 @@
 // @match        https://ggsel.net/catalog/product/*
 // @run-at       document-end
 // @grant        none
-// @updateURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/Banana%20GO
-// @downloadURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/Banana%20GO
+// @updateURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/Banana%20GO.user.js
+// @downloadURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/Banana%20GO.user.js
 // ==/UserScript==
 (function() {
     'use strict';
