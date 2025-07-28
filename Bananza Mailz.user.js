@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Digiseler: Bananza Mailz
 // @namespace    http://tampermonkey.net/
-// @version      5.0
-// @description  Bananza Mailz — авторассылка, кнопка продолжить после F5 + детальное логирование каждого шага для отладки проблем resume. Защита от случайной рассылки через подтверждение.
+// @version      5.1
+// @description  Bananza Mailz — авторассылка, кнопка продолжить после F5 + детальное логирование каждого шага для отладки проблем resume. Защита от случайной рассылки через подтверждение. + Кнопка "Таблица".
 // @author       vibe.coding
 // @match        https://my.digiseller.ru/*
 // @grant        GM_xmlhttpRequest
@@ -15,7 +15,6 @@
 
     // --- Логирование для отладки ---
     function bananzaDebugLog(...args) {
-        // Можно легко фильтровать по [BananzaMailz]
         console.log('[BananzaMailz]', ...args);
     }
 
@@ -25,6 +24,7 @@
     const BANANZA_STORE = 'bananza_mailz_data';
     const BANANZA_TTL_MS = 1000 * 60 * 30;
     const BANANZA_SEND_DELAY_MS = 200;
+    const SHEET_URL = "https://docs.google.com/spreadsheets/d/1mI9IbQ0DMAi6ZIb3B9PrkIL1wrl8AtWe_NhcHvI34rY/edit?usp=sharing";
 
     let sellers = [], message = '', logs = [], errors = [];
     let isSending = false, monkeProgress = 0, cancel = false, pausedAt = 0;
@@ -32,13 +32,11 @@
     let bananzaPanel = null;
     let monkeBtn = null;
 
-    // --- Сохраняем состояние в localStorage ---
     function saveBananzaStore() {
         bananzaDebugLog('saveBananzaStore()', { sellers, isSending, monkeProgress, pausedAt });
         const store = { sellers, message, logs, errors, isSending, monkeProgress, cancel, pausedAt, lastUpdate: Date.now() };
         localStorage.setItem(BANANZA_STORE, JSON.stringify(store));
     }
-    // --- Загружаем состояние из localStorage ---
     function loadBananzaStore() {
         bananzaDebugLog('loadBananzaStore()');
         let store = null;
@@ -54,14 +52,11 @@
             cancel = false;
             pausedAt = store.pausedAt || 0;
             lastUpdate = store.lastUpdate || 0;
-
-            // --- Исправление: если рассылка была оборвана F5 (isSending==true, pausedAt==0, но monkeProgress > 0) ---
             if (isSending && pausedAt === 0 && monkeProgress > 0 && monkeProgress < sellers.length) {
                 bananzaDebugLog('Detected interrupted mailing (F5), auto-pausing at:', monkeProgress);
                 isSending = false;
                 pausedAt = monkeProgress;
             }
-            // Если рассылка полностью закончена (monkeProgress === sellers.length) — сбрасываем состояние
             if (monkeProgress >= sellers.length) {
                 isSending = false;
                 pausedAt = 0;
@@ -69,12 +64,10 @@
             bananzaDebugLog('restored vars:', { sellers, isSending, monkeProgress, pausedAt });
         }
     }
-    // --- Проверка свежести состояния ---
     function stateIsFresh() {
         return !!sellers.length && (Date.now() - lastUpdate < BANANZA_TTL_MS);
     }
 
-    // --- Кнопка-обезьяна ---
     function createMonkeyBtn() {
         bananzaDebugLog('createMonkeyBtn()');
         if (document.getElementById('bananza-monke-btn')) return;
@@ -126,6 +119,7 @@
                 <span style="font-size: 26px; vertical-align: -3px;">🍌</span>
                 <span class="bananza-title">Bananza Mailz</span>
                 <button id="bananza-mailz-reload" title="Обновить список" class="bananza-action-btn">⟳</button>
+                <button id="bananza-mailz-table" title="Открыть Google Таблицу" class="bananza-action-btn">Таблица</button>
                 <button id="bananza-mailz-close" title="Свернуть окно" class="bananza-mailz-close" style="margin-left:auto;">✖</button>
             </div>
             <div class="bananza-info">
@@ -153,12 +147,15 @@
             bananzaDebugLog('bananza-mailz-reload clicked');
             loadBananzaData(true);
         };
+        // Кнопка "Таблица"
+        document.getElementById('bananza-mailz-table').onclick = function() {
+            window.open(SHEET_URL, '_blank');
+        };
 
         // --- Кнопка запуска рассылки ---
         document.getElementById('bananza-go-start-btn').onclick = ()=>{
             bananzaDebugLog('Start button clicked', { isSending, pausedAt });
             if (!isSending) {
-                // --- Включаем режим подтверждения ---
                 window._bananzaNeedConfirm = true;
                 renderBananzaPanel();
             }
@@ -196,7 +193,6 @@
         bananzaPanel.style.zIndex = '1000999';
     }
 
-    // --- Основная функция отрисовки панели ---
     function renderBananzaPanel() {
         bananzaDebugLog('renderBananzaPanel()', { sellersLength: sellers.length, isSending, pausedAt });
         if (!bananzaPanel) { bananzaDebugLog('No bananzaPanel'); return; }
@@ -206,19 +202,16 @@
         let startBtn = document.getElementById('bananza-go-start-btn');
         let cancelBtn = document.getElementById('bananza-go-cancel-btn');
 
-        // --- Защита от случайной рассылки: показываем подтверждение ---
         let confirmDiv = document.getElementById('bananza-go-confirm-wrap');
-        if (confirmDiv) confirmDiv.remove(); // Удаляем старое подтверждение, если есть
+        if (confirmDiv) confirmDiv.remove();
         if (window._bananzaNeedConfirm) {
-            // Создаём контейнер для кнопок подтверждения
             confirmDiv = document.createElement('div');
             confirmDiv.id = 'bananza-go-confirm-wrap';
             confirmDiv.style.display = 'flex';
             confirmDiv.style.gap = '12px';
             confirmDiv.style.marginBottom = '7px';
-            // Кнопка Подтвердить
             let confirmBtn = document.createElement('button');
-            confirmBtn.className = 'ds-bananza-glow-btn ds-yellow'; // теперь жёлтая
+            confirmBtn.className = 'ds-bananza-glow-btn ds-yellow';
             confirmBtn.textContent = 'Подтвердить';
             confirmBtn.onclick = function() {
                 window._bananzaNeedConfirm = false;
@@ -226,7 +219,6 @@
                 bananzaDebugLog('Подтверждение рассылки');
                 startBananzaSend(pausedAt > 0 ? pausedAt : 0);
             };
-            // Кнопка Обновить данные
             let reloadBtn = document.createElement('button');
             reloadBtn.className = 'ds-bananza-glow-btn ds-grey';
             reloadBtn.textContent = 'Обновить данные';
@@ -237,14 +229,11 @@
             };
             confirmDiv.appendChild(confirmBtn);
             confirmDiv.appendChild(reloadBtn);
-            // Вставляем перед логом
             let actions = document.querySelector('.bananza-actions');
             if (actions) actions.parentNode.insertBefore(confirmDiv, actions.nextSibling);
-            // Скрываем обычные кнопки
             startBtn.style.display = 'none';
             cancelBtn.style.display = 'none';
         } else {
-            // Обычный режим — показываем стандартные кнопки
             startBtn.style.display = '';
             if (pausedAt > 0 && !isSending) {
                 startBtn.disabled = false;
@@ -258,7 +247,6 @@
             }
             cancelBtn.style.display = isSending ? '' : 'none';
         }
-        // --- Прогресс и лог ---
         let prog = '';
         if (isSending || pausedAt > 0) {
             let done = Math.max(pausedAt, monkeProgress, 0);
@@ -271,7 +259,6 @@
         saveBananzaStore();
     }
 
-    // --- Логика логирования и загрузки данных ---
     function logBananza(msg, error = false) {
         bananzaDebugLog('logBananza:', msg, error);
         logs.push(`<div style="color:${error ? '#f98b8b' : '#e1f8a7'};">${msg}</div>`);
@@ -303,15 +290,12 @@
         });
     }
 
-    // --- Основная логика рассылки ---
     async function startBananzaSend(startIdx = 0) {
         bananzaDebugLog('startBananzaSend() called', { startIdx, isSending, pausedAt });
         isSending = true;
         cancel = false;
         renderBananzaPanel();
         logBananza(`🍌 Запуск рассылки с позиции ${startIdx+1} из ${sellers.length}...`);
-
-        // --- Ревизия двух предыдущих перед startIdx ---
         let checkFrom = Math.max(0, startIdx - 2);
         for (let j = checkFrom; j < startIdx; ++j) {
             const id = String(sellers[j].id || sellers[j]);
@@ -345,7 +329,6 @@
             saveBananzaStore();
             if (j < startIdx-1) await sleep(BANANZA_SEND_DELAY_MS);
         }
-
         for (let i = startIdx; i < sellers.length; ++i) {
             if (cancel) {
                 pausedAt = i;
@@ -396,7 +379,6 @@
         saveBananzaStore();
     }
 
-    // --- Отправка сообщения продавцу ---
     function sendMsgToSeller(id, msg, idx) {
         bananzaDebugLog('sendMsgToSeller()', { id, idx, msg });
         return new Promise((resolve, reject) => {
@@ -441,7 +423,6 @@
         });
     }
 
-    // --- Получение последнего сообщения продавцу ---
     function getLastSellerMsg(id) {
         bananzaDebugLog('getLastSellerMsg()', { id });
         return new Promise((resolve, reject) => {
@@ -475,23 +456,18 @@
         });
     }
 
-    // --- Лог в Google Sheet ---
     function sendLogToSheet(id, log, url) {
         bananzaDebugLog('sendLogToSheet()', { id, log, url });
-        // Если есть ссылка, формируем формулу HYPERLINK для Google Sheets
         let logValue = log;
         if (url) {
-            // Экранируем кавычки в тексте сообщения
             let safeLog = String(log).replace(/"/g, '""');
             logValue = `=HYPERLINK("${url}";"${safeLog}")`;
         }
         fetch(APPS_SCRIPT_API_URL + `?action=set_log&id=${encodeURIComponent(id)}&log=${encodeURIComponent(logValue)}`)
         .then(r=>r.json()).catch(()=>{});
     }
-    // --- Пауза ---
     function sleep(ms) { return new Promise(res=>setTimeout(res,ms)); }
 
-    // --- Красивый скролл для логов ---
     function enableVibeScroll(id) {
         const el = typeof id === "string" ? document.getElementById(id) : id;
         if (!el) return;
@@ -607,7 +583,7 @@
     border-radius: 8px;
     transition: background .13s;
     padding: 2px 7px;
-    margin-left: 7px;
+    margin-left: 2px;
 }
 .bananza-action-btn:hover { background:#24262d; }
 .bananza-info { margin-bottom: 6px; font-size: 16.5px;}
@@ -657,7 +633,6 @@
 `;
     document.head.appendChild(style);
 
-    // --- Bootstrap ---
     loadBananzaStore();
     bananzaDebugLog('After loadBananzaStore', { sellers, isSending, monkeProgress, pausedAt });
     setTimeout(createMonkeyBtn, 40);
