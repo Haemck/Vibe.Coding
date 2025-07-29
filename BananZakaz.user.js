@@ -3,7 +3,7 @@
 // @namespace    https://digiseller.ru/
 // @version      3.0
 // @description  Email, IP, ник, ID товара, номер заказа — жёлтые кнопки. GGsel ID — новая вкладка, Ctrl — копия. "После покупки" — свёрнут по умолчанию. Мусор скрыт. Для Хозяина всё и сразу!
-// @author       Твоя няшка
+// @author       LittleMonkeyCO
 // @match        https://my.digiseller.ru/asp/inv_of_buyer.asp*
 // @grant        GM_setClipboard
 // @updateURL    https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/BananZakaz.user.js
