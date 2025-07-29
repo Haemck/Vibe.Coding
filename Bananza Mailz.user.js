@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Digiseler: Bananza Mailz
 // @namespace    http://tampermonkey.net/
-// @version      5.1
-// @description  Bananza Mailz — авторассылка, кнопка продолжить после F5 + детальное логирование каждого шага для отладки проблем resume. Защита от случайной рассылки через подтверждение. + Кнопка "Таблица".
+// @version      6.1
+// @description  Bananza Mailz — авторассылка с максимально лояльной проверкой (игнор пустых строк, html-entities и кавычек). Полный лог! 🦍🍌
 // @author       vibe.coding
 // @match        https://my.digiseller.ru/*
 // @grant        GM_xmlhttpRequest
@@ -13,12 +13,22 @@
 (function() {
     'use strict';
 
-    // --- Логирование для отладки ---
-    function bananzaDebugLog(...args) {
-        console.log('[BananzaMailz]', ...args);
+    // --- Ультра-лояльная нормализация и сравнение сообщений ---
+    function normalizeForCompare(text) {
+        text = (text || '').replace(/\r\n|\r/g, '\n');
+        text = text.replace(/&gt;/g, '>').replace(/&lt;/g, '<').replace(/&amp;/g, '&');
+        let lines = text.split('\n').map(s => s.trim());
+        // Оставляем только непустые строки (полное игнорирование пустых!)
+        let norm = lines.filter(line => line !== '');
+        // Удаляем кавычки в начале и конце первой/последней строки
+        if (norm.length && /^['"]/.test(norm[0])) norm[0] = norm[0].slice(1);
+        if (norm.length && /['"]$/.test(norm[norm.length-1])) norm[norm.length-1] = norm[norm.length-1].slice(0,-1);
+        return norm.join('\n');
+    }
+    function superUltraCompare(a, b) {
+        return normalizeForCompare(a) === normalizeForCompare(b);
     }
 
-    // --- Настройки ---
     const APPS_SCRIPT_API_URL = 'https://script.google.com/macros/s/AKfycbzKBKQ7OkXV_nEpdvP4y5QZj6lHFQg2p8oNE_gwCU_B3MPFjyqWDbQPNXq7OeaP74Ya/exec';
     const BANANZA_STATE = 'bananza_mailz_open';
     const BANANZA_STORE = 'bananza_mailz_data';
@@ -32,16 +42,14 @@
     let bananzaPanel = null;
     let monkeBtn = null;
 
+    function bananzaDebugLog(...args) { console.log('[BananzaMailz]', ...args); }
     function saveBananzaStore() {
-        bananzaDebugLog('saveBananzaStore()', { sellers, isSending, monkeProgress, pausedAt });
         const store = { sellers, message, logs, errors, isSending, monkeProgress, cancel, pausedAt, lastUpdate: Date.now() };
         localStorage.setItem(BANANZA_STORE, JSON.stringify(store));
     }
     function loadBananzaStore() {
-        bananzaDebugLog('loadBananzaStore()');
         let store = null;
         try { store = JSON.parse(localStorage.getItem(BANANZA_STORE) || ''); } catch {}
-        bananzaDebugLog('store loaded:', store);
         if (store && typeof store === 'object' && store.sellers && Array.isArray(store.sellers)) {
             sellers = store.sellers || [];
             message = store.message || '';
@@ -53,7 +61,6 @@
             pausedAt = store.pausedAt || 0;
             lastUpdate = store.lastUpdate || 0;
             if (isSending && pausedAt === 0 && monkeProgress > 0 && monkeProgress < sellers.length) {
-                bananzaDebugLog('Detected interrupted mailing (F5), auto-pausing at:', monkeProgress);
                 isSending = false;
                 pausedAt = monkeProgress;
             }
@@ -61,29 +68,22 @@
                 isSending = false;
                 pausedAt = 0;
             }
-            bananzaDebugLog('restored vars:', { sellers, isSending, monkeProgress, pausedAt });
         }
     }
     function stateIsFresh() {
         return !!sellers.length && (Date.now() - lastUpdate < BANANZA_TTL_MS);
     }
-
     function createMonkeyBtn() {
-        bananzaDebugLog('createMonkeyBtn()');
         if (document.getElementById('bananza-monke-btn')) return;
         monkeBtn = document.createElement('div');
         monkeBtn.id = 'bananza-monke-btn';
         monkeBtn.title = 'Открыть/Скрыть Bananza Mailz';
         monkeBtn.innerHTML = '🐒';
         monkeBtn.className = 'bananza-fab bananza-fab-show';
-        monkeBtn.onclick = function() {
-            bananzaDebugLog('monkeBtn clicked');
-            hideMonkeyBtn(() => showBananzaPanel());
-        };
+        monkeBtn.onclick = function() { hideMonkeyBtn(() => showBananzaPanel()); };
         document.body.appendChild(monkeBtn);
     }
     function hideMonkeyBtn(cb) {
-        bananzaDebugLog('hideMonkeyBtn()');
         if (!monkeBtn) return;
         monkeBtn.classList.remove('bananza-fab-show');
         monkeBtn.classList.add('bananza-fab-hide');
@@ -94,7 +94,6 @@
         }, 270);
     }
     function showMonkeyBtn() {
-        bananzaDebugLog('showMonkeyBtn()');
         if (!monkeBtn) createMonkeyBtn();
         monkeBtn.style.display = '';
         monkeBtn.style.opacity = '';
@@ -103,10 +102,7 @@
             monkeBtn.classList.add('bananza-fab-show');
         }, 10);
     }
-
-    // --- Панель рассылки ---
     function showBananzaPanel(forceReload) {
-        bananzaDebugLog('showBananzaPanel()', { forceReload, bananzaPanelExists: !!bananzaPanel });
         if (bananzaPanel && document.body.contains(bananzaPanel)) {
             renderBananzaPanel();
             return;
@@ -139,38 +135,21 @@
         positionBananzaPanel();
         window.addEventListener('resize', positionBananzaPanel);
 
-        document.getElementById('bananza-mailz-close').onclick = function() {
-            bananzaDebugLog('bananza-mailz-close clicked');
-            hideBananzaPanel();
-        };
-        document.getElementById('bananza-mailz-reload').onclick = function() {
-            bananzaDebugLog('bananza-mailz-reload clicked');
-            loadBananzaData(true);
-        };
-        // Кнопка "Таблица"
-        document.getElementById('bananza-mailz-table').onclick = function() {
-            window.open(SHEET_URL, '_blank');
-        };
-
-        // --- Кнопка запуска рассылки ---
+        document.getElementById('bananza-mailz-close').onclick = function() { hideBananzaPanel(); };
+        document.getElementById('bananza-mailz-reload').onclick = function() { loadBananzaData(true); };
+        document.getElementById('bananza-mailz-table').onclick = function() { window.open(SHEET_URL, '_blank'); };
         document.getElementById('bananza-go-start-btn').onclick = ()=>{
-            bananzaDebugLog('Start button clicked', { isSending, pausedAt });
             if (!isSending) {
                 window._bananzaNeedConfirm = true;
                 renderBananzaPanel();
             }
         };
-        document.getElementById('bananza-go-cancel-btn').onclick = ()=>{
-            bananzaDebugLog('Cancel button clicked');
-            cancel = true;
-        };
-
+        document.getElementById('bananza-go-cancel-btn').onclick = ()=>{ cancel = true; };
         renderBananzaPanel();
         localStorage.setItem(BANANZA_STATE, '1');
         if (forceReload || !stateIsFresh()) loadBananzaData();
     }
     function hideBananzaPanel() {
-        bananzaDebugLog('hideBananzaPanel()');
         if (bananzaPanel && document.body.contains(bananzaPanel)) {
             bananzaPanel.classList.remove('bananza-panel-show');
             bananzaPanel.classList.add('bananza-panel-hide');
@@ -192,16 +171,12 @@
         bananzaPanel.style.bottom = '15px';
         bananzaPanel.style.zIndex = '1000999';
     }
-
     function renderBananzaPanel() {
-        bananzaDebugLog('renderBananzaPanel()', { sellersLength: sellers.length, isSending, pausedAt });
-        if (!bananzaPanel) { bananzaDebugLog('No bananzaPanel'); return; }
         document.getElementById('bananza-count').textContent = sellers.length;
         let msgEl = document.getElementById('bananza-go-msg');
         if (msgEl) msgEl.textContent = message || 'Сообщение не указано!';
         let startBtn = document.getElementById('bananza-go-start-btn');
         let cancelBtn = document.getElementById('bananza-go-cancel-btn');
-
         let confirmDiv = document.getElementById('bananza-go-confirm-wrap');
         if (confirmDiv) confirmDiv.remove();
         if (window._bananzaNeedConfirm) {
@@ -216,7 +191,6 @@
             confirmBtn.onclick = function() {
                 window._bananzaNeedConfirm = false;
                 renderBananzaPanel();
-                bananzaDebugLog('Подтверждение рассылки');
                 startBananzaSend(pausedAt > 0 ? pausedAt : 0);
             };
             let reloadBtn = document.createElement('button');
@@ -258,16 +232,13 @@
         document.getElementById('bananza-go-log').innerHTML = logs.map(e=>e).join('') || `<span style="color:#777">Лог пуст</span>`;
         saveBananzaStore();
     }
-
     function logBananza(msg, error = false) {
-        bananzaDebugLog('logBananza:', msg, error);
         logs.push(`<div style="color:${error ? '#f98b8b' : '#e1f8a7'};">${msg}</div>`);
         renderBananzaPanel();
         let logDiv = document.getElementById('bananza-go-log');
         if (logDiv) logDiv.scrollTop = logDiv.scrollHeight;
     }
     function loadBananzaData(forceReload) {
-        bananzaDebugLog('loadBananzaData()', { forceReload });
         if (!bananzaPanel) return;
         document.getElementById('bananza-count').textContent = '…';
         document.getElementById('bananza-go-msg').textContent = 'Загрузка данных...';
@@ -281,7 +252,6 @@
             pausedAt = 0;
             isSending = false;
             lastUpdate = Date.now();
-            bananzaDebugLog('Data loaded from API', { sellers, message });
             renderBananzaPanel();
             saveBananzaStore();
         }).catch(e=>{
@@ -289,12 +259,8 @@
             logBananza(String(e), true);
         });
     }
-
     async function startBananzaSend(startIdx = 0) {
-        bananzaDebugLog('startBananzaSend() called', { startIdx, isSending, pausedAt });
-        isSending = true;
-        cancel = false;
-        renderBananzaPanel();
+        isSending = true; cancel = false; renderBananzaPanel();
         logBananza(`🍌 Запуск рассылки с позиции ${startIdx+1} из ${sellers.length}...`);
         let checkFrom = Math.max(0, startIdx - 2);
         for (let j = checkFrom; j < startIdx; ++j) {
@@ -302,16 +268,13 @@
             let uniqueMsg = (sellers[j].message || '').trim();
             let globalMsg = (message || '').trim();
             let toSend = uniqueMsg ? uniqueMsg : globalMsg;
-            if (!toSend) {
-                logBananza(`[${j+1}] ID ${id}: нет сообщения, пропущено (ревизия)`, true);
-                continue;
-            }
+            if (!toSend) { logBananza(`[${j+1}] ID ${id}: нет сообщения, пропущено (ревизия)`, true); continue; }
             logBananza(`[${j+1}] ID ${id}: ревизия последнего сообщения...`);
             try {
                 let lastMsg = await getLastSellerMsg(id);
-                let normLast = (lastMsg||'').trim().replace(/\s+/g,' ');
-                let normSent = (toSend||'').trim().replace(/\s+/g,' ');
-                if (normLast === normSent) {
+                console.log('[BananzaMailz][Отправлено]:', toSend.split('\n'));
+                console.log('[BananzaMailz][Получено]:', lastMsg.split('\n'));
+                if (superUltraCompare(lastMsg, toSend)) {
                     logBananza(`[${j+1}] ID ${id}: уже отправлено (ревизия)`, false);
                     await sendLogToSheet(id, 'Уже отправлено (ревизия)', `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${id}`);
                 } else {
@@ -323,35 +286,26 @@
                 errors.push(id);
                 await sendLogToSheet(id, 'Ошибка ревизии: ' + (e.message||e));
             }
-            monkeProgress = j+1;
-            pausedAt = 0;
-            renderBananzaPanel();
-            saveBananzaStore();
+            monkeProgress = j+1; pausedAt = 0; renderBananzaPanel(); saveBananzaStore();
             if (j < startIdx-1) await sleep(BANANZA_SEND_DELAY_MS);
         }
         for (let i = startIdx; i < sellers.length; ++i) {
             if (cancel) {
-                pausedAt = i;
-                isSending = false;
+                pausedAt = i; isSending = false;
                 logBananza(`<b>Рассылка поставлена на паузу. Можно продолжить в любой момент.</b>`, true);
-                renderBananzaPanel();
-                saveBananzaStore();
-                return;
+                renderBananzaPanel(); saveBananzaStore(); return;
             }
             const id = String(sellers[i].id || sellers[i]);
             let uniqueMsg = (sellers[i].message || '').trim();
             let globalMsg = (message || '').trim();
             let toSend = uniqueMsg ? uniqueMsg : globalMsg;
-            if (!toSend) {
-                logBananza(`[${i+1}] ID ${id}: нет сообщения, пропущено`, true);
-                continue;
-            }
+            if (!toSend) { logBananza(`[${i+1}] ID ${id}: нет сообщения, пропущено`, true); continue; }
             logBananza(`[${i+1}] ID ${id}: проверяю последнее сообщение...`);
             try {
                 let lastMsg = await getLastSellerMsg(id);
-                let normLast = (lastMsg||'').trim().replace(/\s+/g,' ');
-                let normSent = (toSend||'').trim().replace(/\s+/g,' ');
-                if (normLast === normSent) {
+                console.log('[BananzaMailz][Отправлено]:', toSend.split('\n'));
+                console.log('[BananzaMailz][Получено]:', lastMsg.split('\n'));
+                if (superUltraCompare(lastMsg, toSend)) {
                     logBananza(`[${i+1}] ID ${id}: уже отправлено, пропускаем!`);
                     await sendLogToSheet(id, 'Уже отправлено', `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${id}`);
                 } else {
@@ -363,38 +317,31 @@
                 errors.push(id);
                 await sendLogToSheet(id, 'Ошибка: ' + (e.message||e));
             }
-            monkeProgress = i+1;
-            pausedAt = 0;
-            renderBananzaPanel();
-            saveBananzaStore();
+            monkeProgress = i+1; pausedAt = 0; renderBananzaPanel(); saveBananzaStore();
             if (i < sellers.length-1) await sleep(BANANZA_SEND_DELAY_MS);
         }
-        isSending = false;
-        pausedAt = 0;
-        renderBananzaPanel();
+        isSending = false; pausedAt = 0; renderBananzaPanel();
         let finalMsg = (errors.length === 0)
             ? 'Рассылка завершена, все обезьяны получили бананы 🍌🐒'
             : `Рассылка завершена, <b>не все обезьяны получили бананы!</b> (${errors.length} ошибок)`;
         logBananza(`<div style="font-size:16px;color:${errors.length?'#ff8585':'#b6ff79'};margin-top:7px;">${finalMsg}</div>`);
         saveBananzaStore();
     }
-
     function sendMsgToSeller(id, msg, idx) {
-        bananzaDebugLog('sendMsgToSeller()', { id, idx, msg });
         return new Promise((resolve, reject) => {
+            const msgCRLF = msg.replace(/\r?\n/g, '\r\n');
             GM_xmlhttpRequest({
                 method: "POST",
                 url: `https://my.digiseller.ru/asp/new_message.asp?id_s=${id}`,
                 headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                data: `txt_Message=${encodeURIComponent(msg)}`,
+                data: `txt_Message=${encodeURIComponent(msgCRLF)}`,
                 onload: function(response) {
-                    bananzaDebugLog('sendMsgToSeller response', { status: response.status, finalUrl: response.finalUrl });
                     if (response.status === 200 && !response.finalUrl.includes('login.asp')) {
                         setTimeout(() => {
                             getLastSellerMsg(id).then(lastMsg => {
-                                let normLast = (lastMsg||'').trim().replace(/\s+/g,' ');
-                                let normSent = (msg||'').trim().replace(/\s+/g,' ');
-                                if (normLast === normSent) {
+                                console.log('[BananzaMailz][Отправлено]:', msg.split('\n'));
+                                console.log('[BananzaMailz][Получено]:', lastMsg.split('\n'));
+                                if (superUltraCompare(lastMsg, msg)) {
                                     logBananza(`[${idx}] ID ${id}: OK, сообщение подтверждено!`);
                                     sendLogToSheet(id, 'OK', `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${id}`);
                                     resolve();
@@ -415,22 +362,16 @@
                         reject(new Error('Ошибка отправки. Код: ' + response.status));
                     }
                 },
-                onerror: function() {
-                    bananzaDebugLog('sendMsgToSeller onerror');
-                    reject(new Error('Ошибка сети или CORS'));
-                }
+                onerror: function() { reject(new Error('Ошибка сети или CORS')); }
             });
         });
     }
-
     function getLastSellerMsg(id) {
-        bananzaDebugLog('getLastSellerMsg()', { id });
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method: "GET",
                 url: `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${id}`,
                 onload: function(response) {
-                    bananzaDebugLog('getLastSellerMsg response', { status: response.status });
                     if (response.status === 200) {
                         let temp = document.createElement('div');
                         temp.innerHTML = response.responseText;
@@ -440,24 +381,16 @@
                         let font = firstTr.querySelector('font[color="b2b2b2"]');
                         if (font) {
                             let msg = font.innerHTML.replace(/<br\s*\/?>/gi, "\n").replace(/<.*?>/g,"").trim();
+                            console.log('[BananzaMailz][Получено от Digiseller]:', msg.split('\n'));
                             resolve(msg);
-                        } else {
-                            reject(new Error("Не удалось извлечь текст сообщения."));
-                        }
-                    } else {
-                        reject(new Error("Ошибка запроса: " + response.status));
-                    }
+                        } else { reject(new Error("Не удалось извлечь текст сообщения.")); }
+                    } else { reject(new Error("Ошибка запроса: " + response.status)); }
                 },
-                onerror: function() {
-                    bananzaDebugLog('getLastSellerMsg onerror');
-                    reject(new Error("Ошибка сети или CORS"));
-                }
+                onerror: function() { reject(new Error("Ошибка сети или CORS")); }
             });
         });
     }
-
     function sendLogToSheet(id, log, url) {
-        bananzaDebugLog('sendLogToSheet()', { id, log, url });
         let logValue = log;
         if (url) {
             let safeLog = String(log).replace(/"/g, '""');
@@ -467,7 +400,6 @@
         .then(r=>r.json()).catch(()=>{});
     }
     function sleep(ms) { return new Promise(res=>setTimeout(res,ms)); }
-
     function enableVibeScroll(id) {
         const el = typeof id === "string" ? document.getElementById(id) : id;
         if (!el) return;
@@ -485,7 +417,6 @@
             }
         }, { passive: false });
     }
-
     // --- Стили ---
     let style = document.createElement('style');
     style.textContent = `
@@ -634,12 +565,9 @@
     document.head.appendChild(style);
 
     loadBananzaStore();
-    bananzaDebugLog('After loadBananzaStore', { sellers, isSending, monkeProgress, pausedAt });
     setTimeout(createMonkeyBtn, 40);
     setTimeout(() => {
-        bananzaDebugLog('Bootstrap check:', { pausedAt, monkeProgress, sellersLength: sellers.length });
         if (pausedAt > 0 && monkeProgress < sellers.length) {
-            bananzaDebugLog('Auto-opening panel due to paused state');
             showBananzaPanel();
         }
     }, 100);
