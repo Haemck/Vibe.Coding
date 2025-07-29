@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NewMsg
 // @namespace    http://tampermonkey.net/
-// @version      1.2
+// @version      1.5
 // @description  Фиксированное поле для отправки сообщений в DigiSeller. POST прямо на сервер, чекбоксы, автообновление страницы после отправки!
 // @author       vibe.coding
 // @match        https://my.digiseller.ru/asp/seller_messages.asp*
@@ -106,13 +106,11 @@
 
     // ==== ВСПОМОГАТЕЛЬНЫЕ ====
 
-    // Получаем id_s продавца из URL
     function getSellerId() {
         const m = location.search.match(/id_s=(\d+)/);
         return m ? m[1] : null;
     }
 
-    // === ОТПРАВКА POST ===
     const textarea = document.getElementById('vibe-fixed-input');
     const sendBtn = document.getElementById('vibe-fixed-send');
     const keeperChk = document.getElementById('vibe-fixed-wmkeeper');
@@ -121,7 +119,8 @@
 
     async function sendMsg() {
         const sellerId = getSellerId();
-        const message = textarea.value.trim();
+        // === КРИТИЧЕСКИЙ МОМЕНТ: заменяем \n на \r\n ===
+        const message = textarea.value.trim().replace(/\n/g, '\r\n');
         if (!sellerId) {
             statusDiv.textContent = 'Ошибка: не найден ID продавца (id_s) в ссылке!';
             statusDiv.style.color = "#bb2222";
@@ -137,7 +136,6 @@
         statusDiv.style.color = "#6b8b30";
         sendBtn.disabled = true;
 
-        // Готовим form data
         const form = new URLSearchParams();
         form.append('txt_Message', message);
         if (keeperChk.checked) form.append('SendKeeper', 'Yes');
@@ -153,7 +151,6 @@
                 credentials: 'same-origin'
             });
 
-            // --- автообновление страницы после успешной отправки ---
             if (res.ok) {
                 location.reload();
                 return;
@@ -168,7 +165,6 @@
         sendBtn.disabled = false;
     }
 
-    // === ENTER/CTRL+ENTER для быстрого ввода ===
     textarea.addEventListener('keydown', function(e) {
         if (e.ctrlKey && (e.key === 'Enter' || e.keyCode === 13)) {
             sendMsg();
@@ -176,9 +172,8 @@
     });
     sendBtn.addEventListener('click', sendMsg);
 
-    // === Фокус по F7 (можно удалить) ===
     document.addEventListener('keydown', function(e) {
         if (e.key === "F7") textarea.focus();
     });
 })();
-// Всё прокомментировано. После отправки — страница всегда перезагружается.
+// Теперь переносы строк в отправке будут в точности как у стандартной формы DigiSeller.
