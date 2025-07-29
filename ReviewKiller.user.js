@@ -4,8 +4,8 @@
 // @description  Мультипродавец, EN шаблон
 // @match        https://my.digiseller.ru/asp/inv_of_buyer.asp*
 // @grant        none
-// @updateURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/ReviewKiller
-// @downloadURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/ReviewKiller
+// @updateURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/ReviewKiller.user.js
+// @downloadURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/ReviewKiller.user.js
 // ==/UserScript==
 
 (function() {
