@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         DigiSeller: MonkeBubbles
 // @namespace    http://tampermonkey.net/
-// @version      2.57
-// @description  Красивый интерфейс: bubble, лайтбокс, две кнопки поверх [новое сообщение]/[отметить прочитанным] + кнопка-ник продавца (копировать ник или seller_id). Теперь с эффектом нажатия!
+// @version      2.58
+// @description  Красивый интерфейс: bubble, лайтбокс, две кнопки поверх [новое сообщение]/[отметить прочитанным] + кнопка-ник продавца (копировать ник или seller_id). Теперь с эффектом нажатия и красивой кнопкой удаления!
 // @author       vibe.coding
 // @match        https://my.digiseller.ru/asp/seller_messages.asp*
 // @grant        GM_xmlhttpRequest
@@ -15,7 +15,7 @@
 (function() {
     'use strict';
 
-    // === CSS для всех кнопок, bubble, никнейма и ЭФФЕКТА НАЖАТИЯ ===
+    // === CSS для всех кнопок, bubble, никнейма, удаления ===
     const vibeCSS = `
 .vibe-btn-fake-row {
     display: flex;
@@ -160,12 +160,42 @@
     100%{transform: scale(1);}
 }
 
+.vibe-remove-btn-fake {
+    background: #fbe4e4;
+    color: #b93030 !important;
+    border: 1px solid #f2b0b0 !important;
+    border-radius: 8px !important;
+    padding: 2px 13px 2px 13px !important;
+    font-size: 12px !important;
+    font-family: Verdana, Arial, sans-serif !important;
+    font-weight: 600 !important;
+    margin-left: 12px !important;
+    cursor: pointer;
+    outline: none !important;
+    box-shadow: 0 1px 5px #fbe4e440;
+    transition: background 0.14s, color 0.14s, border 0.16s, transform 0.11s;
+    vertical-align: middle;
+    opacity: 0.96;
+    display: inline-block;
+}
+.vibe-remove-btn-fake:hover, .vibe-remove-btn-fake:focus {
+    background: #ffeaea !important;
+    color: #a1001a !important;
+    border-color: #ef6c6c !important;
+    box-shadow: 0 3px 14px #f5cccc40;
+}
+.vibe-remove-btn-fake:active {
+    background: #f5d4d4 !important;
+    color: #7c1818 !important;
+    border-color: #d64242 !important;
+    transform: scale(0.98);
+}
 /* --- Остальные стили bubble/лайтбокс --- */
 .vibe-msg-bubble {
     border-radius: 10px;
     box-shadow: none;
     padding: 5px 11px 5px 11px;
-    max-width: 77%;
+    max-width: 65%;
     min-width: 24px;
     word-break: break-word;
     font-size: 12px !important;
@@ -181,12 +211,12 @@
 }
 .vibe-msg-out .vibe-msg-bubble {
     background: #e4fbe4 !important;
-    color: #276638 !important;
+    color: #0 !important;
     border: 1px solid #bde8bc !important;
 }
 .vibe-msg-in .vibe-msg-bubble {
     background: #f8fafd !important;
-    color: #23272b !important;
+    color: #0 !important;
     border: 1px solid #e0e7ef !important;
 }
 .vibe-msg-text-meta {
@@ -322,7 +352,6 @@
         const m = window.location.search.match(/[?&]id_s=(\d+)/);
         return m ? m[1] : null;
     }
-
     function fetchSellerNickname(sellerId) {
         return new Promise((resolve, reject) => {
             if (!sellerId) return reject('seller_id пуст');
@@ -355,14 +384,12 @@
             });
         });
     }
-
     function makeNickButton(nick, sellerId) {
         const btn = document.createElement('button');
         btn.className = 'vibe-btn-nick';
         btn.type = 'button';
         btn.textContent = nick;
         btn.title = `Клик: скопировать ник\nCtrl+клик: скопировать seller_id`;
-
         btn.addEventListener('click', function(e) {
             e.preventDefault();
             let value = e.ctrlKey ? sellerId : nick;
@@ -376,11 +403,33 @@
                 }, 800);
             });
         });
-
         return btn;
     }
-
-    // === ВСТАВКА РЯДОМ С КНОПКАМИ ===
+    function extractDeleteLink(msgTd) {
+        // ищем <a class="target" ...>удалить</a>
+        let links = Array.from(msgTd.querySelectorAll('a.target'));
+        return links.find(a => /удалить/i.test(a.textContent));
+    }
+    function normalizeDeleteLink(a) {
+        if (!a) return null;
+        if (!a.href) return null;
+        // Если абсолютная — оставляем, если относительная — добавляем префикс
+        if (/^https?:/.test(a.href)) return a.href;
+        return location.origin + location.pathname + a.getAttribute('href');
+    }
+    function makeRemoveBtn(href, cb) {
+        const btn = document.createElement('button');
+        btn.className = 'vibe-remove-btn-fake';
+        btn.type = 'button';
+        btn.textContent = 'удалить';
+        btn.tabIndex = 0;
+        btn.onclick = function(e) {
+            e.preventDefault();
+            cb(href);
+        };
+        return btn;
+    }
+    // === Рисуем кнопки поверх ===
     async function drawFakeButtonsRow() {
         const links = Array.from(document.querySelectorAll('a'))
             .filter(a =>
@@ -458,7 +507,7 @@
     const observer = new MutationObserver(() => drawFakeButtonsRow());
     observer.observe(document.body, { childList: true, subtree: true });
 
-    // --- Оформление сообщений (bubble, lightbox и т.п.) ---
+    // --- Оформление сообщений (bubbles, перенос кнопки "удалить") ---
     document.querySelectorAll('tr').forEach(tr => {
         const tds = tr.querySelectorAll('td');
         if (tds.length !== 3) return;
@@ -474,7 +523,13 @@
         let isIn  = img.src.includes('mail_in');
         const date = dateTd.textContent.replace(/[\n\r]+/g,'').trim();
 
+        // --- обработка кнопки "удалить" ---
         let html = msgTd.innerHTML;
+        let removeA = extractDeleteLink(msgTd);
+        let removeHref = removeA ? removeA.getAttribute('href') : null;
+        if (removeA) {
+            removeA.style.display = "none"; // скрываем оригинал, не удаляем!
+        }
 
         html = html
             .replace(/<div[^>]+class=["']?vibe-msg-bubble["']?[^>]*>[\s\S]*?<\/div>/gi, function(match){
@@ -524,11 +579,17 @@
 
         html = html.replace(/\[(\d{7,})\]/g, '$1');
 
+        // --- формируем баббл с кнопкой "удалить" справа от даты ---
+        let removeBtnHTML = '';
+        if (removeHref) {
+            removeBtnHTML = `<span class="vibe-remove-btn-fake" data-href="${removeHref}">удалить</span>`;
+        }
+
         msgTd.innerHTML = `
             <div class="vibe-msg-bubble">
                 <div class="vibe-msg-text-meta">
                     <span class="vibe-msg-text">${html}</span>
-                    <span class="vibe-msg-meta">${date}</span>
+                    <span class="vibe-msg-meta">${date}${removeBtnHTML}</span>
                 </div>
             </div>
         `;
@@ -541,13 +602,26 @@
         iconTd.remove();
     });
 
+    // --- обработчик нажатий по кастомным "удалить" ---
+    document.body.addEventListener('click', function(e) {
+        let btn = e.target.closest('.vibe-remove-btn-fake');
+        if (!btn) return;
+        e.preventDefault();
+        e.stopPropagation();
+
+        let href = btn.getAttribute('data-href');
+        if (!href) return;
+        // Открыть в этом окне
+        window.location.href = href;
+    });
+
     // --- Лайтбокс ---
     function openLightbox(imgSrc) {
         let oldBox = document.getElementById('vibe-lightbox-overlay');
         if (oldBox) oldBox.remove();
 
         const prevOverflow = document.body.style.overflow;
-        document.body.style.overflow = 'hidden';
+        document.body.style.overflow = '';
 
         let overlay = document.createElement('div');
         overlay.id = 'vibe-lightbox-overlay';
@@ -645,13 +719,11 @@
         overlay.addEventListener('click', e => {
             if (e.target === overlay) {
                 overlay.remove();
-                document.body.style.overflow = prevOverflow;
             }
         });
         document.addEventListener('keydown', function escClose(evt) {
             if (evt.key === 'Escape') {
                 if (overlay.parentNode) overlay.remove();
-                document.body.style.overflow = prevOverflow;
                 document.removeEventListener('keydown', escClose);
             }
         });
@@ -713,6 +785,7 @@
 
     handleBubbleImages();
 
+    // --- Observer для кнопок/картинок после ajax ---
     const bubbleObserver = new MutationObserver(() => {
         drawFakeButtonsRow();
         handleBubbleImages();
