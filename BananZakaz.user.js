@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Digiseller: BananZakaz
 // @namespace    https://digiseller.ru/
-// @version      3.0
-// @description  Email, IP, ник, ID товара, номер заказа — жёлтые кнопки. GGsel ID — новая вкладка, Ctrl — копия. "После покупки" — свёрнут по умолчанию. Мусор скрыт. Для Хозяина всё и сразу!
-// @author       LittleMonkeyCO
+// @version      3.2
+// @description  Email, IP, ник, ID товара, номер заказа — жёлтые кнопки. GGsel ID — новая вкладка, Ctrl — копия. Описания и доп. инфа — свёрнуты. Мусор скрыт. Для Хозяина всё и сразу!
+// @author       Маленькая обезьянка
 // @match        https://my.digiseller.ru/asp/inv_of_buyer.asp*
 // @grant        GM_setClipboard
 // @updateURL    https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/BananZakaz.user.js
@@ -430,33 +430,49 @@
         inforow.appendChild(orderBtn);
     }
 
-    // ---- СВОРАЧИВАНИЕ "ПОСЛЕ ПОКУПКИ" ----
-    function collapseAfterPurchaseBlocks() {
-        document.querySelectorAll('td.inforow').forEach(td => {
-            if (/после\s+покупки:/i.test(td.innerText)) {
-                if (td.dataset.dmCollapseApplied) return;
-                td.dataset.dmCollapseApplied = '1';
-                const original = td.innerHTML;
-                const btn = document.createElement('span');
-                btn.className = 'dm-collapse-btn';
-                btn.textContent = '🛍️ Показать подробности...';
-                btn.style.marginBottom = '8px';
-                const block = document.createElement('div');
-                block.className = 'dm-collapsed-block';
-                block.innerHTML = original;
-                btn.addEventListener('click', function () {
-                    if (block.classList.contains('dm-collapsed-block')) {
-                        block.classList.remove('dm-collapsed-block');
-                        btn.textContent = '🛍️ Скрыть подробности';
-                    } else {
-                        block.classList.add('dm-collapsed-block');
-                        btn.textContent = '🛍️ Показать подробности...';
-                    }
-                });
-                td.innerHTML = '';
-                td.appendChild(btn);
-                td.appendChild(block);
-            }
+    // ---- СВОРАЧИВАНИЕ ОПИСАНИЙ, "ПОСЛЕ ПОКУПКИ" и ДОП.ИНФЫ ----
+    function collapseLongBlocks() {
+        // Массив паттернов, что надо сворачивать (ОПИСАНИЕ, ПОСЛЕ ПОКУПКИ, ДОП.ИНФОРМАЦИЯ)
+        const collapsePatterns = [
+            /ОПИСАНИЕТОВАРА/,
+            /ПОСЛЕПОКУПКИ/,
+            /ДОП(\.|ОЛНИТЕЛЬНАЯ)?\s*ИНФ(ОРМАЦИЯ)?/i, // Доп. информация, Доп.информация, Дополнительная информация
+            /INFORMATION|INFO/i                       // info, information
+        ];
+
+        document.querySelectorAll('tr').forEach(tr => {
+            const nameCell = tr.querySelector('.namerow');
+            const infoCell = tr.querySelector('.inforow');
+            if (!nameCell || !infoCell) return;
+
+            const label = nameCell.textContent.replace(/\s/g, '').toUpperCase();
+
+            // Проверяем по всем паттернам
+            if (!collapsePatterns.some(re => re.test(label))) return;
+            if (infoCell.dataset.dmCollapseApplied) return;
+            infoCell.dataset.dmCollapseApplied = '1';
+
+            // Оригинальный HTML блока
+            const original = infoCell.innerHTML;
+            const btn = document.createElement('span');
+            btn.className = 'dm-collapse-btn';
+            btn.textContent = '🛍️ Показать подробности...';
+            btn.style.marginBottom = '8px';
+            const block = document.createElement('div');
+            block.className = 'dm-collapsed-block';
+            block.innerHTML = original;
+            btn.addEventListener('click', function () {
+                if (block.classList.contains('dm-collapsed-block')) {
+                    block.classList.remove('dm-collapsed-block');
+                    btn.textContent = '🛍️ Скрыть подробности';
+                } else {
+                    block.classList.add('dm-collapsed-block');
+                    btn.textContent = '🛍️ Показать подробности...';
+                }
+            });
+            infoCell.innerHTML = '';
+            infoCell.appendChild(btn);
+            infoCell.appendChild(block);
         });
     }
 
@@ -469,12 +485,10 @@
     enhanceSeller();
     enhanceGoodID();
     enhanceOrderID();
-    collapseAfterPurchaseBlocks();
+    collapseLongBlocks();
     hideUglyElements();
     setTimeout(() => {
         hideUglyElements();
-        collapseAfterPurchaseBlocks();
+        collapseLongBlocks();
     }, 500);
-
-    // Всё готово к службе, Хозяин ♥
 })();
