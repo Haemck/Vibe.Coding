@@ -338,6 +338,14 @@
     from { transform: scale(0.95);}
     to   { transform: scale(1);}
 }
+/* Скрыть оригинальную ссылку "удалить" и квадратные скобки рядом с ней */
+
+a.target[href*="del=""]::before,
+a.target[href*="del=""]::after {
+    content: '';
+    display: none !important;
+}
+
 `;
 
     if (!document.getElementById('vibe-fakebtn-css')) {
@@ -527,9 +535,7 @@
         let html = msgTd.innerHTML;
         let removeA = extractDeleteLink(msgTd);
         let removeHref = removeA ? removeA.getAttribute('href') : null;
-        if (removeA) {
-            removeA.style.display = "none"; // скрываем оригинал, не удаляем!
-        }
+
 
         html = html
             .replace(/<div[^>]+class=["']?vibe-msg-bubble["']?[^>]*>[\s\S]*?<\/div>/gi, function(match){
@@ -577,19 +583,20 @@
             return `<div>${line.trim()}</div>`;
         }).join('');
 
-        html = html.replace(/\[(\d{7,})\]/g, '$1');
+      html = html.replace(/\[\s*|\s*\]/g, ''); // удаляем только скобки, а ссылку оставляем
+
+
 
         // --- формируем баббл с кнопкой "удалить" справа от даты ---
         let removeBtnHTML = '';
-        if (removeHref) {
-            removeBtnHTML = `<span class="vibe-remove-btn-fake" data-href="${removeHref}">удалить</span>`;
-        }
+
 
         msgTd.innerHTML = `
             <div class="vibe-msg-bubble">
                 <div class="vibe-msg-text-meta">
                     <span class="vibe-msg-text">${html}</span>
-                    <span class="vibe-msg-meta">${date}${removeBtnHTML}</span>
+                    <span class="vibe-msg-meta">${date}
+</span>
                 </div>
             </div>
         `;
@@ -602,18 +609,6 @@
         iconTd.remove();
     });
 
-    // --- обработчик нажатий по кастомным "удалить" ---
-    document.body.addEventListener('click', function(e) {
-        let btn = e.target.closest('.vibe-remove-btn-fake');
-        if (!btn) return;
-        e.preventDefault();
-        e.stopPropagation();
-
-        let href = btn.getAttribute('data-href');
-        if (!href) return;
-        // Открыть в этом окне
-        window.location.href = href;
-    });
 
     // --- Лайтбокс ---
     function openLightbox(imgSrc) {
