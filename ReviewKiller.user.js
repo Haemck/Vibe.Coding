@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Review Killer
+// @name         Review Killer 🦍🍌 BananaMultiSeller v6.6
 // @version      6.6
-// @description  Мультипродавец, EN шаблон
+// @description  Мультипродавец: быстрые письма, копипаст ников/ID, удаление отзывов с банановым вайбом! + перевод сообщений EN/RU (локально для блока)
 // @match        https://my.digiseller.ru/asp/inv_of_buyer.asp*
 // @grant        none
 // @updateURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/ReviewKiller.user.js
@@ -488,17 +488,20 @@
 
     // --- Генерация сообщения для одного продавца
     function makeSellerMsg(ids, lang) {
-        let t = templates[lang];
-        let msg = t.greet + "\n\n";
-        if (ids.length === 1) {
-            msg += t.one(ids[0]);
-        } else if (ids.length > 1) {
-            msg += t.many(ids);
-        } else {
-            msg += "_______";
-        }
-        return msg;
+    let t = templates[lang];
+    let msg = ""; // Приветствие временно отключено
+    // msg += t.greet + "\n\n"; // ← закомментировали эту строку
+
+    if (ids.length === 1) {
+        msg += t.one(ids[0]);
+    } else if (ids.length > 1) {
+        msg += t.many(ids);
+    } else {
+        msg += "_______";
     }
+    return msg;
+}
+
 
     // --- Асинхронно получаем по всем id продавца и ник
     async function getMultiSellerMap(ids) {
@@ -564,32 +567,22 @@
             let msgActions = document.createElement('div');
             msgActions.className = 'banana-msg-actions';
 
-            let btnId = document.createElement('button');
-            btnId.className = 'banana-msg-btn';
-            btnId.textContent = 'ID';
-            btnId.title = 'Скопировать все id для этого продавца';
-            btnId.onclick = function() {
-                if (ids.length === 0) return;
-                try {
-                    navigator.clipboard.writeText(ids.join('\n'));
-                    pirateLog('<span style="color:#ffe066">ID товаров скопированы</span>');
-                } catch (e) {}
-            };
-            msgActions.appendChild(btnId);
+            let btnTable = document.createElement('button');
+btnTable.className = 'banana-msg-btn';
+btnTable.innerHTML = '📋';
+btnTable.title = 'Скопировать как таблицу: id / ник / Удалён';
+btnTable.onclick = function() {
+    if (!nick || ids.length === 0) return;
+    let rows = ids.map(id => [id, nick, 'Удалён'].join('\t')).join('\n');
+    try {
+        navigator.clipboard.writeText(rows);
+        pirateLog('<span style="color:#f6de83">Скопировано в табличном формате</span>');
+    } catch (e) {
+        pirateLog('<span style="color:#d5545f">Ошибка копирования!</span>');
+    }
+};
+msgActions.appendChild(btnTable);
 
-            let btnNick = document.createElement('button');
-            btnNick.className = 'banana-msg-btn';
-            btnNick.textContent = 'Ник';
-            btnNick.title = 'Скопировать ник столько раз, сколько id';
-            btnNick.onclick = function() {
-                if (!nick || ids.length < 1) return;
-                let str = Array(ids.length).fill(nick).join('\n');
-                try {
-                    navigator.clipboard.writeText(str);
-                    pirateLog('<span style="color:#e5c774">Ник скопирован</span>');
-                } catch (e) {}
-            };
-            msgActions.appendChild(btnNick);
 
             block.appendChild(leftCol);
             block.appendChild(msgContent);
