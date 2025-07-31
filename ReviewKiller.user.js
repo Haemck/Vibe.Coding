@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         Review Killer 🦍🍌 BananaMultiSeller v6.6
+// @name         Review Killer 🦍🍌 BananaMultiSeller v6.8
 // @version      6.8
 // @description  Мультипродавец: быстрые письма, копипаст ников/ID, удаление отзывов с банановым вайбом! + перевод сообщений EN/RU (локально для блока)
 // @match        https://my.digiseller.ru/asp/inv_of_buyer.asp*
