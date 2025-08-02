@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         BubblesFix
+// @name         MonkeBubblesFix
 // @namespace    http://tampermonkey.net/
 // @version      1.5
 // @description  Фикс кнопки "удалить"
@@ -8,8 +8,8 @@
 // @grant        GM_xmlhttpRequest
 // @connect      my.digiseller.ru
 // @run-at       document-idle
-// @updateURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/BubblesFix.user.js
-// @downloadURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/BubblesFix.user.js
+// @updateURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/MonkeBubblesFix.user.js
+// @downloadURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/MonkeBubblesFix.user.js
 // ==/UserScript==
 
 (function () {
