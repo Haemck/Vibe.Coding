@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         NewMsg
+// @name         MonkeMessage
 // @namespace    http://tampermonkey.net/
 // @version      1.5
 // @description  Фиксированное поле для отправки сообщений в DigiSeller. POST прямо на сервер, чекбоксы, автообновление страницы после отправки!
@@ -7,8 +7,8 @@
 // @match        https://my.digiseller.ru/asp/seller_messages.asp*
 // @grant        none
 // @run-at       document-end
-// @updateURL    https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/NewMsg.user.js
-// @downloadURL  https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/NewMsg.user.js
+// @updateURL    https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/MonkeMessage.user.js
+// @downloadURL  https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/MonkeMessage.user.js
 // ==/UserScript==
 
 (function() {
