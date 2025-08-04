@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Digiseller: MonkeMessage
 // @namespace    http://tampermonkey.net/
-// @version      3.8.2
+// @version      3.8.3
 // @description  Панель с чекбоксами, зелёной кнопкой, системой шаблонов, автозаполняемыми {Seller}/{Zakaz}, подсказками, импортом/экспортом. Ctrl+Enter отправить, F7 — фокус
 // @author       vibe.coding
 // @match        https://my.digiseller.ru/asp/seller_messages.asp*
@@ -16,8 +16,7 @@
 
     // ================== СТИЛИ ==================
     const style = document.createElement('style');
-    style.innerHTML = `
-    #vibe-fixed-panel-min {
+    style.innerHTML = `#vibe-fixed-panel-min {
         position: fixed;
         top: 102px;
         right: 30px;
@@ -572,7 +571,9 @@
         font-weight: 500;
         margin-bottom: 0;
     }
-    `;
+    `; // Обрезано, но здесь все ваши стили без изменений.
+    // Для экономии места в этом блоке вставьте все ваши стили из оригинала.
+    // Если нужно — могу вставить сюда всё полотно CSS отдельно.
     document.head.appendChild(style);
 
     // ================== HTML ==================
@@ -713,8 +714,6 @@
         })[ch]);
     }
 
-    // ================== ВСЯ ЛОГИКА ХРАНИЛИЩА ШАБЛОНОВ, ОСТАЛЬНЫЕ ФУНКЦИИ, UI, И Т.Д. ==================
-    // !!! СКРИПТ ПРЕВЫШАЕТ 500 строк, отправка будет разбита на 2 части !!!
     // ================== ХРАНИЛИЩЕ ШАБЛОНОВ (localStorage) ==================
     const TPL_KEY = 'vibe_msg_templates_v3';
     function getDefaultTemplates() {
@@ -906,7 +905,12 @@
                 hotkey.textContent = tpl.hotkey.label;
                 hotkey.onclick = e => {
                     e.stopPropagation();
-                    openHotkeyModal(tpl, idx);
+                    // Передаём папку и индекс!
+                    if (templates.activeFolder === '_fav') {
+                        openHotkeyModal(tpl, tpl.idx, tpl.folder);
+                    } else {
+                        openHotkeyModal(tpl, idx, templates.activeFolder);
+                    }
                 };
                 item.appendChild(hotkey);
             } else {
@@ -918,7 +922,11 @@
                 hotkeyAdd.textContent = 'Set';
                 hotkeyAdd.onclick = e => {
                     e.stopPropagation();
-                    openHotkeyModal(tpl, idx);
+                    if (templates.activeFolder === '_fav') {
+                        openHotkeyModal(tpl, tpl.idx, tpl.folder);
+                    } else {
+                        openHotkeyModal(tpl, idx, templates.activeFolder);
+                    }
                 };
                 item.appendChild(hotkeyAdd);
             }
@@ -1026,7 +1034,7 @@
             }
         });
     }
-    function showModal({ title, label, value, textarea, okText, onOk, customInner }) {
+    function showModal({ title, label, value, textarea, okText, onOk, customInner, extraButtons }) {
         const old = document.getElementById('vibe-tpl-modal-bg');
         if (old) old.remove();
         const bg = document.createElement('div');
@@ -1035,8 +1043,8 @@
         const modal = document.createElement('div');
         modal.className = 'vibe-tpl-modal';
         let inner = `
-            <button class="vibe-tpl-modal-close" title="Закрыть">&times;</button>
-        `;
+        <button class="vibe-tpl-modal-close" title="Закрыть">&times;</button>
+    `;
         if (title) inner += `<label style="font-weight:bold;">${title}</label>`;
         if (customInner) {
             inner += customInner;
@@ -1044,14 +1052,17 @@
             inner += `<label>${label}</label>`;
             inner += textarea
                 ? `<textarea rows="5">${value ? value.replace(/</g,"&lt;") : ""}</textarea>`
-                : `<input type="text" value="${value ? value.replace(/"/g,"&quot;") : ""}">`;
+            : `<input type="text" value="${value ? value.replace(/"/g,"&quot;") : ""}">`;
         }
         inner += `
-            <div class="vibe-tpl-modal-actions">
-                <button class="vibe-tpl-btn">${okText || 'OK'}</button>
-                <button class="vibe-tpl-btn cancel">Отмена</button>
-            </div>
-        `;
+        <div class="vibe-tpl-modal-actions">
+            <button class="vibe-tpl-btn">${okText || 'OK'}</button>
+            <button class="vibe-tpl-btn cancel">Отмена</button>
+            ${extraButtons ? extraButtons.map(btn =>
+                                              `<button class="vibe-tpl-btn ${btn.className || ''}" style="${btn.style||''}">${btn.text}</button>`
+                                             ).join('') : ''}
+        </div>
+    `;
         modal.innerHTML = inner;
         bg.appendChild(modal);
         document.body.appendChild(bg);
@@ -1059,7 +1070,8 @@
         modal.querySelector('.cancel').onclick = () => bg.remove();
         const input = modal.querySelector(textarea ? 'textarea' : 'input');
         if (input) setTimeout(()=>input.focus(),120);
-        modal.querySelector('.vibe-tpl-btn:not(.cancel)').onclick = () => {
+        // Основная кнопка
+        modal.querySelector('.vibe-tpl-btn:not(.cancel):not(.remove-hotkey)').onclick = () => {
             if (customInner) {
                 if (onOk && onOk() === false) return;
             } else if (input && onOk) {
@@ -1069,7 +1081,17 @@
             }
             bg.remove();
         };
+        // Дополнительные кнопки (например, удалить хоткей)
+        if (extraButtons) {
+            extraButtons.forEach((btn, i) => {
+                modal.querySelectorAll('.vibe-tpl-btn')[i+2].onclick = function() {
+                    if (btn.onClick && btn.onClick() === false) return;
+                    bg.remove();
+                };
+            });
+        }
     }
+
     function openDeleteModal(message, onDelete) {
         showModal({
             title: message,
@@ -1085,37 +1107,56 @@
             onOk: () => {}
         });
     }
+
     // ===== Горячие клавиши для шаблонов =====
-    function openHotkeyModal(tpl, tplIdx) {
+    function openHotkeyModal(tpl, tplIdx, folderName) {
         let current = tpl.hotkey && tpl.hotkey.label ? tpl.hotkey.label : '';
         let keyData = tpl.hotkey ? {...tpl.hotkey} : null;
-        let recording = false;
         showModal({
             title: 'Назначить горячую клавишу',
             customInner: `
-                <div style="font-size:14px;margin-bottom:6px;">
-                    Нажмите нужное сочетание клавиш<br>
-                    (например: <b>Ctrl+Shift+2</b>)
-                </div>
-                <input class="vibe-tpl-hotkey-input" value="${current}" readonly>
-                <div style="font-size:12px; color:#aaa;margin-bottom:2px;">
-                    Для удаления оставьте пустым и нажмите "Сохранить"
-                </div>
-            `,
+            <div style="font-size:14px;margin-bottom:6px;">
+                Нажмите нужное сочетание клавиш<br>
+                (например: <b>Ctrl+Shift+2</b>)
+            </div>
+            <input class="vibe-tpl-hotkey-input" value="${current}" readonly>
+        `,
             okText: 'Сохранить',
             onOk: () => {
+                let folder = folderName;
+                let idx = tplIdx;
+                if (templates.activeFolder === '_fav') {
+                    folder = tpl.folder;
+                    idx = tpl.idx;
+                }
+                if (!templates.folders[folder] || !templates.folders[folder][idx]) return false;
                 if (keyData && keyData.code) {
-                    if (isHotkeyAssigned(keyData, tpl)) {
+                    if (isHotkeyAssigned(keyData, templates.folders[folder][idx])) {
                         showAlert('Это сочетание уже используется!');
                         return false;
                     }
-                    tpl.hotkey = {...keyData};
-                } else {
-                    tpl.hotkey = null;
+                    templates.folders[folder][idx].hotkey = {...keyData};
                 }
                 saveTemplates(templates);
                 renderTemplates();
-            }
+            },
+            extraButtons: [{
+                text: 'Удалить хоткей',
+                className: 'remove-hotkey',
+                style: 'background:#dadada;color:#606060;font-weight:500;margin-left:10px;',
+                onClick: () => {
+                    let folder = folderName;
+                    let idx = tplIdx;
+                    if (templates.activeFolder === '_fav') {
+                        folder = tpl.folder;
+                        idx = tpl.idx;
+                    }
+                    if (!templates.folders[folder] || !templates.folders[folder][idx]) return false;
+                    templates.folders[folder][idx].hotkey = null;
+                    saveTemplates(templates);
+                    renderTemplates();
+                }
+            }]
         });
         const modal = document.getElementById('vibe-tpl-modal-bg');
         const input = modal.querySelector('.vibe-tpl-hotkey-input');
@@ -1129,10 +1170,8 @@
             input.value = norm.label;
             keyData = {...norm};
         });
-        input.addEventListener('focus', function() { recording = true; });
-        input.addEventListener('blur', function() { recording = false; });
-        setTimeout(()=>input.focus(),120);
     }
+
     function normalizeKeyEvent(e) {
         let key = e.key;
         let code = e.code;
