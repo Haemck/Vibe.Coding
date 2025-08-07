@@ -195,8 +195,8 @@
     border-radius: 10px;
     box-shadow: none;
     padding: 5px 11px 5px 11px;
-    max-width: 65%;
-    min-width: 24px;
+    max-width: 65vw;
+    min-width: 65vw;
     word-break: break-word;
     font-size: 12px !important;
     font-family: Verdana, Arial, sans-serif !important;
@@ -345,6 +345,39 @@ a.target[href*="del=""]::after {
     content: '';
     display: none !important;
 }
+/* --- Группировка сообщений по дате --- */
+.vibe-date-group {
+    border-right: 3px solid #7ebde9;
+    border-radius: 4px;
+    padding-right: 12px;
+    margin: 20px 6px;
+    position: relative;
+    background-color: transparent;
+}
+
+.vibe-date-label {
+    background: linear-gradient(90deg, #e5e9f0 70%, #dbe7fb 100%);
+    color: #3d5887;
+    font-size: 14px;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    font-weight: 700;
+    padding: 7px 22px;
+    border-radius: 22px;
+    display: inline-block;
+    box-shadow: 0 2px 8px #b5d2fa1c, inset 0 0 0 1.5px #cad9ee;
+    letter-spacing: 0.7px;
+    white-space: nowrap;
+    margin: 12px 0 8px 0;
+    border: none;
+    transition: box-shadow .18s, background .17s;
+}
+.vibe-date-label:hover {
+    background: linear-gradient(90deg, #e1eafe 75%, #f8fafc 100%);
+    box-shadow: 0 4px 16px #b5d2fa28, 0 0 0 2px #abc8ec25;
+}
+
+
+
 
 `;
 
@@ -607,8 +640,71 @@ a.target[href*="del=""]::after {
 
         dateTd.remove();
         iconTd.remove();
+        // --- Визуальная группировка сообщений по дате ---
+        if (!window.vibeMsgGroups) window.vibeMsgGroups = {};
+
+        if (!window.vibeMsgGroups[date]) {
+            // создаём обёртку-день
+            const wrapper = document.createElement('tbody');
+            wrapper.className = 'vibe-date-wrapper';
+            wrapper.dataset.vibedate = date;
+
+            const parent = tr.parentNode;
+            wrapper.appendChild(tr); // переносим текущий tr в wrapper
+            parent.appendChild(wrapper);
+            window.vibeMsgGroups[date] = wrapper;
+        } else {
+            window.vibeMsgGroups[date].appendChild(tr);
+        }
+
+
     });
 
+// --- Визуальная группировка сообщений по дате (исправленная версия) ---
+(function groupMessagesByDate() {
+    if (!window.vibeMsgGroups) window.vibeMsgGroups = {};
+
+    const msgContainer = document.querySelector('table[width="100%"][cellpadding="2"]');
+    if (!msgContainer) return;
+
+    document.querySelectorAll('tr.vibe-msg-out, tr.vibe-msg-in').forEach(tr => {
+        const dateMeta = tr.querySelector('.vibe-msg-meta');
+        if (!dateMeta) return;
+
+        const date = dateMeta.textContent.trim().split(' ')[0];
+        if (!date) return;
+
+        let wrapper = window.vibeMsgGroups[date];
+        if (!wrapper) {
+            // создаём новую группу
+            wrapper = document.createElement('tbody');
+            wrapper.className = 'vibe-date-group';
+            wrapper.dataset.vibedate = date;
+
+            // создаём строку с визуальной меткой даты
+            const dateLabelRow = document.createElement('tr');
+            const dateLabelTd = document.createElement('td');
+            dateLabelTd.colSpan = 3;
+
+            const dateLabel = document.createElement('div');
+           dateLabel.className = 'vibe-date-label';
+
+
+            dateLabel.textContent = date;
+
+            dateLabelTd.appendChild(dateLabel);
+            dateLabelRow.appendChild(dateLabelTd);
+            wrapper.appendChild(dateLabelRow);
+
+            msgContainer.appendChild(wrapper);
+            window.vibeMsgGroups[date] = wrapper;
+        }
+
+        wrapper.appendChild(tr);
+    });
+
+
+})();
 
     // --- Лайтбокс ---
     function openLightbox(imgSrc) {
