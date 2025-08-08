@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         BubblesFix + MsgFinder
+// @name         BubblesFix
 // @namespace    http://tampermonkey.net/
 // @version      2.3
 // @description  Кнопка "удалить", быстрый поиск, копируемая .vibe-date-label, и скрытие даты (оставляем только время) в .vibe-msg-meta. Работает при SPA/ajax переходах.
