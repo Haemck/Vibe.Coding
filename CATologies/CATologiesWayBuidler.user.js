@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         DigiSeller: Массовое создание категорий/разделов (Paths Merge + Persist State + Icons Reset/Paste + Confirm Popover)
+// @name         DigiSeller: CATologiesWayBuidler
 // @namespace    https://my.digiseller.ru/
 // @version      4.4
 // @description  Vibe: мультистрочный путь, автообъединение, скрытие поля по кнопке, без дублей + сохранение состояния + иконки + стильное всплывающее подтверждение очистки поверх кнопки
