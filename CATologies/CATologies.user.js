@@ -6,8 +6,8 @@
 // @author       vibe.coding
 // @match        https://my.digiseller.ru/asp/razdels.asp*
 // @grant        GM_addStyle
-// @updateURL    https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/Banana%20GO.user.js
-// @downloadURL  https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/Banana%20GO.user.js
+// @updateURL    https://github.com/Haemck/Vibe.Coding/raw/refs/heads/main/CATologies/CATologies.user.js
+// @downloadURL  https://github.com/Haemck/Vibe.Coding/raw/refs/heads/main/CATologies/CATologies.user.js
 // ==/UserScript==
 
 (function () {
