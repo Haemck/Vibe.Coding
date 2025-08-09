@@ -9,7 +9,7 @@
 // @grant        GM_setClipboard
 // @grant        GM_addStyle
 // @updateURL    https://github.com/Haemck/Vibe.Coding/raw/refs/heads/main/CATologies/CATologiesDeleter.user.js
-// @downloadURL  https://github.com/Haemck/Vibe.Coding/raw/refs/heads/main/CATologies/CATologiesWayBuidler.user.js
+// @downloadURL  https://github.com/Haemck/Vibe.Coding/raw/refs/heads/main/CATologies/CATologiesDeleter.user.js
 // ==/UserScript==
 
 (function () {
