@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         DigiSeller: Удаление категории/раздела (bi-trash SVG, vibe-blackgold, успех по HTTP 2xx, перетаскивание+запоминание)
+// @name         DigiSeller: CATologiesDeleter
 // @namespace    https://my.digiseller.ru/
 // @version      1.5
 // @description  Удаляет категорию/раздел по ID с подтверждением в окошке. Успех по коду ответа (200–299). SVG bi-trash, стиль vibe-blackgold, FAB-кнопка, копирование ID результата. Перетаскивание окна (Alt+ЛКМ по заголовку) и запоминание позиции.
