@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         DigiSeller: Редактирование (перетаскивание+клэмп, детальное логирование, все поля, vibe-blackgold, HTTP 2xx)
+// @name         DigiSeller: CATologiesEditor
 // @namespace    https://my.digiseller.ru/
 // @version      1.7
 // @description  Редактирование категории/раздела: парсит по имени, логирует всё, отправляет всё. Окно перетаскивается, запоминает позицию, не выходит за экран даже при расширении содержимого. Успех по HTTP 2xx.
