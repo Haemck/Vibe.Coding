@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         DigiSeller: Массовая смена комиссии (vibe-blackgold, логирование, 2xx, перетаскивание+клэмп, скрываемый отчёт)
+// @name         DigiSeller: CATologiesAutoComiss
 // @namespace    https://my.digiseller.ru/
 // @version      1.4
 // @description  Массовая смена комиссии: перетаскиваемое окно (ЛКМ по заголовку) с запоминанием позиции и клэмпом в вьюпорте. HTTP 2xx = успех. Отчёт скрыт по умолчанию, открывается кнопкой с SVG-иконкой «отчёта».
