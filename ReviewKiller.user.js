@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Review Killer
-// @version      23
+// @version      2.0
 // @description  Удаление отзывов, письма продавцам; EPIC: The Musical Edition
 // @match        https://my.digiseller.ru/asp/inv_of_buyer.asp*
 // @grant        none
