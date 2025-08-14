@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Review Killer
-// @version      2.1
+// @version      2.3
 // @description  Удаление отзывов, письма продавцам; EPIC: The Musical Edition
 // @match        https://my.digiseller.ru/asp/inv_of_buyer.asp*
 // @grant        none
@@ -27,15 +27,14 @@
   };
   const q = (t) => `<span class="epic-quote">“${t}”</span>`;
 
-  // Кэши
-  const greetNeededCache = Object.create(null);
+  // Кэши (все — в памяти вкладки)
+  const greetNeededCache = Object.create(null); // надо ли вставлять "Здравствуйте!" сегодня
   const firstLangCache   = Object.create(null); // авто-язык по самой первой странице
   const blockLangMap     = Object.create(null); // текущий язык блока (RU/EN)
 
-  // -------- Контекстный замок продавца (важно для твоего бага)
+  // -------- Контекстный замок продавца (фикс «прыжков» между продавцами)
   const CONTEXT = { lock:false, sellerId:null };
   const fromMessagesRef = /\/asp\/seller_messages\.asp/i.test(document.referrer);
-  const currentOrderMatch = location.href.match(/[?&]id_i=(\d+)/);
 
   // ================== СТИЛИ (укорочено) ==================
   const css = `
@@ -47,11 +46,11 @@
     width:355px;min-height:48px;display:flex;flex-direction:column;pointer-events:auto;box-shadow:0 0 40px 9px #231e4b80,0 0 6px 2px #eec8574d}
   #epic-topbar{display:flex;align-items:center;gap:9px;padding:9px 15px 7px 19px;border-bottom:2px solid #f6cd57b0;background:linear-gradient(90deg,#25204a 85%,#473b7b 100%);border-radius:16px 16px 0 0}
   #epic-flag-btn{margin-left:auto;background:none;border:none;font-size:29px;color:var(--gold2);cursor:pointer;border-radius:50%;padding:0 7px 0 3px;text-shadow:0 2px 8px #1a004eae,0 0 10px #ffda55d5}
-  /* Анимация разворачивания */
+  /* Плавное сворачивание/разворачивание (фикс дерганий) */
   #epic-content-wrap{height:0;opacity:0;padding:0 23px 0 21px;overflow:hidden;display:block;transition:height .32s cubic-bezier(.25,.8,.25,1),opacity .22s ease,padding .22s ease;will-change:height,opacity,padding}
   #epic-main-panel:not(.epic-collapsed) #epic-content-wrap{height:var(--epic-content-height,auto);opacity:1;padding:20px 23px 14px 21px}
   #epic-id-row{display:flex;align-items:center;gap:7px}
-  #epic-id-input{width:100%;height:43px;font-size:16px;resize:none;border:1.6px solid #f6cd57b0;border-radius:8px;background:var(--field);color:var(--ink);padding:7px 9px}
+  #epic-id-input{width:100%;height:43px;font-size:16px;resize:none;border:1.6px solid #f6cd57b0;border-radius:8px;background:var(--field);color:var(--ink);padding:7px 9px;box-shadow:0 0 7px #f6cd5742 inset}
   #epic-kill-btn{height:43px;min-width:110px;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:bold;font-family:'UnifrakturCook',serif;background:linear-gradient(93deg,#f6cd57 65%,#ffe25f 100%);color:#2b1d0a;border:none;border-radius:9px}
   #epic-del-btn{background:linear-gradient(90deg,#282e62 35%,#eac762 120%);color:#fffbe7;font-family:'UnifrakturCook',serif;font-size:16px;border:none;border-radius:7px;padding:7px 18px;min-width:135px}
   #epic-clear-btn{background:linear-gradient(90deg,#373f83 35%,#d7d5e3 120%);color:#fffbe9;font-size:15px;border:none;border-radius:7px;padding:6px 11px}
@@ -101,6 +100,8 @@
   const input   = panel.querySelector('#epic-id-input');
   const wrap    = panel.querySelector('#epic-content-wrap');
   const inner   = panel.querySelector('#epic-content-inner');
+
+  // --- пересчёт высоты для плавной анимации
   function recalcH(){ wrap.style.setProperty('--epic-content-height', inner.scrollHeight + 'px'); }
   if ('ResizeObserver' in window) new ResizeObserver(recalcH).observe(inner);
 
@@ -113,6 +114,7 @@
     en: { greet:'Hello!',        one:id=>`The negative review for order ${id} has been cancelled.`, many:ids=>`Negative reviews for orders ${ids.join(', ')} have been cancelled.` }
   };
   const templatesAPI = {
+    // Сборка текста письма с учётом языка и необходимости приветствия
     make(ids, lang, needGreet){
       const t = templates[lang];
       const body = (ids.length===1) ? t.one(ids[0]) : (ids.length>1 ? t.many(ids) : '_______');
@@ -122,6 +124,7 @@
 
   // ================== ПАРС ID (переносы/пробелы/запятые) ==================
   function parseIds(text){ return text.split(/[,\s]+/).map(t=>t.trim()).filter(t=>/^\d+$/.test(t)); }
+
   function addIdToInput(newId){
     const set = new Set(parseIds(input.value));
     if (set.has(newId)) return false;
@@ -130,19 +133,31 @@
     return true;
   }
 
-  // ================== ВСПОМОГАТЕЛЬНОЕ ==================
+  // ================== ХЕЛПЕРЫ ==================
   function autosizeTA(ta){ if (!ta) return; ta.style.height='auto'; ta.style.height = ta.scrollHeight + 'px'; }
   function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
   function todayRu(){ const d=new Date(); const dd=String(d.getDate()).padStart(2,'0'); const mm=String(d.getMonth()+1).padStart(2,'0'); const yyyy=d.getFullYear(); return `${dd}.${mm}.${yyyy}`; }
-
-  // ================== БЕЗОПАСНЫЙ ПАРСИНГ HTML ==================
   function toDoc(html){ return new DOMParser().parseFromString(html, 'text/html'); }
 
+  // --- Достаём id_i из URL без учёта регистра ключа (ID_I / id_i / Id_I)
+  function getOrderIdFromUrl(href = window.location.href) {
+    try {
+      const url = new URL(href, location.origin);
+      for (const [k, v] of url.searchParams) {
+        if (k.toLowerCase() === 'id_i' && /^\d+$/.test(String(v))) return String(v);
+      }
+    } catch (e) {}
+    const m = href.match(/[?&]id_i=(\d+)/i);
+    return m ? m[1] : null;
+  }
+
   // ================== СЕТЕВЫЕ ==================
+  // Удаление самого отзыва по ID заказа
   async function epicDeleteOrderReview(id){
     try{ await fetch(`/asp/inv_of_buyer.asp?oper=kill&id_i=${encodeURIComponent(id)}`, { credentials:'same-origin' }); return true; }catch{ return false; }
   }
 
+  // По ID заказа вытягиваем sellerId и ник
   async function epicGetSellerInfoByOrderId(orderId){
     try{
       const html = await fetch(`/asp/inv_of_buyer.asp?id_i=${orderId}`, { credentials:'same-origin' }).then(r=>r.text());
@@ -158,6 +173,7 @@
     }catch{ return { sellerId:null, nickname:null }; }
   }
 
+  // Удаление сопутствующего письма об отзыве
   async function epicDeleteNegativeMessage(orderId, sellerId){
     try{
       const html = await fetch(`/asp/seller_messages.asp?id_s=${sellerId}`, { credentials:'same-origin' }).then(r=>r.text());
@@ -177,7 +193,7 @@
     }catch{ return false; }
   }
 
-  // ======= Дойти до самой старой страницы диалога =======
+  // ======= Переход к самой старой странице диалога (умно) =======
   async function fetchOldestPageHTML(sellerId){
     let url = `/asp/seller_messages.asp?id_s=${sellerId}`;
     for (let hops=0; hops<12; hops++){
@@ -199,9 +215,9 @@
     return await fetch(`/asp/seller_messages.asp?id_s=${sellerId}`, { credentials:'same-origin' }).then(r=>r.text());
   }
 
+  // Определяем язык самого раннего исходящего сообщения с площадки
   function extractEarliestTextLang(html){
     const doc = toDoc(html);
-    // Находим таблицу с сообщениями
     const candidates = Array.from(doc.querySelectorAll('table[width="100%"][cellpadding="2"]'));
     let rows = [];
     for (const tb of candidates){
@@ -215,13 +231,14 @@
       const f = tr.querySelector('font'); if (f && f.textContent.trim()) return f.textContent.trim();
       return '';
     };
-    // Снизу вверх: сначала самое раннее исходящее
+    // Снизу вверх: сначала самое раннее исходящее письмо
     for (let i=rows.length-1; i>=0; i--){
       const tr = rows[i];
       if (tr.querySelector('img[src*="mail_out.gif"]')) {
         const t = getText(tr); if (t) return { lang: /[\u0400-\u04FF]/.test(t) ? 'ru' : 'en', text:t };
       }
     }
+    // Если исходящего нет — берём самое раннее любое
     for (let i=rows.length-1; i>=0; i--){
       const tr = rows[i]; const t = getText(tr);
       if (t) return { lang: /[\u0400-\u04FF]/.test(t) ? 'ru' : 'en', text:t };
@@ -239,6 +256,7 @@
     }catch{ return 'ru'; }
   }
 
+  // Было ли сегодня исходящее письмо от нас
   async function epicHasOutgoingToday(sellerId){
     try{
       const html = await fetch(`/asp/seller_messages.asp?id_s=${sellerId}`, { credentials:'same-origin' }).then(r=>r.text());
@@ -249,6 +267,7 @@
       return hasOut;
     }catch{ return false; }
   }
+
   async function ensureGreetNeeded(sellerId){
     if (sellerId in greetNeededCache) return greetNeededCache[sellerId];
     const hasOut = await epicHasOutgoingToday(sellerId);
@@ -272,7 +291,7 @@
 
   // ================== ОТРИСОВКА БЛОКОВ ПИСЕМ ==================
   async function drawAllSellerMsgs(all){
-    // контекстная фильтрация (фикс бага):
+    // Контекстная фильтрация (если пришли из переписки и знаем конкретного продавца)
     let drawable = all;
     if (CONTEXT.lock && CONTEXT.sellerId && all[CONTEXT.sellerId]) {
       drawable = { [CONTEXT.sellerId]: all[CONTEXT.sellerId] };
@@ -321,7 +340,7 @@
 
       block.appendChild(left); block.appendChild(content); container.appendChild(block);
 
-      // Переключение RU/EN
+      // Переключение RU/EN (визуально: RU — русская версия)
       translateBtn.onclick = () => {
         blockLangMap[sid] = (blockLangMap[sid]==='ru') ? 'en' : 'ru';
         translateBtn.textContent = (blockLangMap[sid]==='ru') ? 'RU' : 'EN';
@@ -372,15 +391,20 @@
 
   // ================== КНОПКИ ТОПБАРА ==================
   clearBtn.onclick = ()=>{ input.value=''; saveIds(''); epicLog(`<span style="color:#ffe25f">Очередь ID очищена.</span> ${q(EPIC.empathy[0])}`); alwaysDraw(); updateKillBtnText(); };
+
+  // >>> КНОПКА «На удаление» — теперь учитываем любой регистр ID_I/id_i <<<
   delBtn.onclick = ()=>{
-    const m = window.location.href.match(/[?&]id_i=(\d+)/);
-    if (m && m[1]){
-      const added = addIdToInput(m[1]);
-      if (added){ saveIds(input.value); epicLog(`<span style="color:#ffe25f">ID ${m[1]} добавлен в очередь.</span> ${q(EPIC.start[0])}`); alwaysDraw(); updateKillBtnText(); }
-      else epicLog(`<span style="color:#ffe25f">ID ${m[1]} уже в списке.</span>`);
-    } else epicLog('<span style="color:#ffe25f">ID не найден в ссылке.</span>');
+    const id = getOrderIdFromUrl();           // <-- Берём ID без учёта регистра ключа
+    if (id) {
+      const added = addIdToInput(id);
+      if (added){ saveIds(input.value); epicLog(`<span style="color:#ffe25f">ID ${id} добавлен в очередь.</span> ${q(EPIC.start[0])}`); alwaysDraw(); updateKillBtnText(); }
+      else epicLog(`<span style="color:#ffe25f">ID ${id} уже в списке.</span>`);
+    } else {
+      epicLog('<span style="color:#ffe25f">ID не найден в ссылке.</span>');
+    }
   };
 
+  // Сворачивание/разворачивание панели
   const contentWrap = panel.querySelector('#epic-content-wrap');
   const contentInner = panel.querySelector('#epic-content-inner');
   function recalcContent(){ contentWrap.style.setProperty('--epic-content-height', contentInner.scrollHeight + 'px'); }
@@ -436,22 +460,21 @@
   // ================== ИНИЦИАЛИЗАЦИЯ ==================
   // Включаем «контекстный замок» продавца, если пришли из переписки
   (async function initContextLock(){
-    if (fromMessagesRef && currentOrderMatch){
+    const currentOrderId = getOrderIdFromUrl();  // <-- используем новый хелпер
+    if (fromMessagesRef && currentOrderId){
       CONTEXT.lock = true;
-      const orderId = currentOrderMatch[1];
       try{
-        const info = await epicGetSellerInfoByOrderId(orderId);
+        const info = await epicGetSellerInfoByOrderId(currentOrderId);
         CONTEXT.sellerId = info.sellerId || null;
       }catch{ CONTEXT.sellerId = null; }
     }
   })();
 
   // первичная отрисовка
-  function updateKillBtn(){ const ids = parseIds(input.value); killBtn.textContent = ids.length>1 ? 'Удалить отзывы' : 'Удалить отзыв'; }
   const contentObserver = new ResizeObserver(recalcContent); contentObserver.observe(contentInner);
   (function boot(){
     const d = localStorage.getItem(LS_KEY); if (d!==null) input.value = d;
-    alwaysDraw(); updateKillBtn();
+    alwaysDraw(); updateKillBtnText();
   })();
 
 })();
