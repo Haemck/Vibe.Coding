@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         Digiseller: MonkeMessage
 // @namespace    http://tampermonkey.net/
-// @version      3.8.3
+// @version      3.8.4
 // @description  Панель с чекбоксами, зелёной кнопкой, системой шаблонов, автозаполняемыми {Seller}/{Zakaz}, подсказками, импортом/экспортом. Ctrl+Enter отправить, F7 — фокус
 // @author       vibe.coding
 // @match        https://my.digiseller.ru/asp/seller_messages.asp*
 // @grant        none
-// @run-at       document-end
+// @run-at       document-idle
 // @updateURL    https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/MonkeMessage.user.js
 // @downloadURL  https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/MonkeMessage.user.js
 // ==/UserScript==
@@ -257,11 +257,20 @@
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+        /* ВАЖНО: flex-контейнер для заголовка и крестика */
     }
     .vibe-tpl-tab.active,
     .vibe-tpl-tab:hover {
         background: #d2f6e1;
         color: #1f794e;
+    }
+    /* === НОВОЕ: внутренняя «обёртка» названия папки с ellipsis === */
+    .vibe-tpl-tab .vibe-tpl-tab-title {
+        flex: 1 1 auto;     /* занимать доступное место */
+        min-width: 0;       /* критично для ellipsis во flex-контейнере */
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
     .vibe-tpl-tab .vibe-tpl-tab-remove {
         margin-left: 6px;
@@ -273,6 +282,8 @@
         padding: 0 2px;
         border-radius: 3px;
         transition: background .13s;
+        /* === НОВОЕ: не сжимать кнопку, держать справа === */
+        flex: 0 0 auto;
     }
     .vibe-tpl-tab .vibe-tpl-tab-remove:hover {
         background: #fde6e4;
@@ -448,7 +459,7 @@
         background: #dadada; color: #606060; font-weight: 500;
     }
     .vibe-tpl-modal .vibe-tpl-btn.cancel:hover { background: #bbb; }
-    .vibe-tpl-modal-close {
+    .vibe-tpl-modal .vibe-tpl-modal-close {
         position: absolute;
         right: 11px;
         top: 11px;
@@ -459,7 +470,7 @@
         cursor: pointer;
         transition: color .14s;
     }
-    .vibe-tpl-modal-close:hover { color: #c8584c; }
+    .vibe-tpl-modal .vibe-tpl-modal-close:hover { color: #c8584c; }
     @media (max-width: 650px) {
         #vibe-fixed-panel-min {
             width: 97vw;
@@ -571,9 +582,7 @@
         font-weight: 500;
         margin-bottom: 0;
     }
-    `; // Обрезано, но здесь все ваши стили без изменений.
-    // Для экономии места в этом блоке вставьте все ваши стили из оригинала.
-    // Если нужно — могу вставить сюда всё полотно CSS отдельно.
+    `;
     document.head.appendChild(style);
 
     // ================== HTML ==================
@@ -817,16 +826,28 @@
     function renderTabs() {
         const tabsDiv = document.getElementById('vibe-templates-tabs');
         tabsDiv.innerHTML = '';
+
+        // Вкладка "Избранное"
         const favTab = document.createElement('div');
         favTab.className = 'vibe-tpl-tab' + (templates.activeFolder === '_fav' ? ' active' : '');
         favTab.textContent = 'Избранное';
         favTab.onclick = () => { templates.activeFolder = '_fav'; saveTemplates(templates); renderTemplates(); };
         tabsDiv.appendChild(favTab);
+
+        // Папки
         Object.keys(templates.folders).forEach(folder => {
             const tab = document.createElement('div');
             tab.className = 'vibe-tpl-tab' + (templates.activeFolder === folder ? ' active' : '');
-            tab.textContent = folder;
+            tab.title = folder; // тултип с полным названием
+
+            // === НОВОЕ: оборачиваем название папки в span с ellipsis ===
+            const titleSpan = document.createElement('span');
+            titleSpan.className = 'vibe-tpl-tab-title';
+            titleSpan.textContent = folder;
+            tab.appendChild(titleSpan);
+
             tab.onclick = () => { templates.activeFolder = folder; saveTemplates(templates); renderTemplates(); };
+
             if (Object.keys(templates.folders).length > 1) {
                 const removeBtn = document.createElement('button');
                 removeBtn.className = 'vibe-tpl-tab-remove';
@@ -848,6 +869,7 @@
             }
             tabsDiv.appendChild(tab);
         });
+
         const addBtn = document.createElement('button');
         addBtn.id = 'vibe-tpl-add-folder';
         addBtn.type = 'button';
@@ -1119,7 +1141,7 @@
                 Нажмите нужное сочетание клавиш<br>
                 (например: <b>Ctrl+Shift+2</b>)
             </div>
-            <input class="vibe-tpl-hotkey-input" value="${current}" readonly>
+            <input class="vibe-tpl-hotkey-input" value="\${current}" readonly>
         `,
             okText: 'Сохранить',
             onOk: () => {
@@ -1232,7 +1254,7 @@
         }
     }, true);
 
-    // === Подсказки шаблонов по тексту ===
+    // === Подсказки по тексту ===
     function showSuggestions(value) {
         suggestionsBlock.innerHTML = '';
         value = value.trim();
@@ -1339,6 +1361,20 @@
     document.addEventListener('keydown', e => {
         if (e.key === "F7") textarea.focus();
     });
+    window.addEventListener('mousedown', function(e) {
+        if (e.button === 4) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            sendMsg();
+        }
+    }, true);
+    document.addEventListener('keydown', function(e) {
+        if (e.code === 'F15') {
+            e.preventDefault();
+            sendMsg();
+        }
+    });
+
     textarea.addEventListener('input', function() {
         statusDiv.textContent = '';
         statusDiv.className = '';
