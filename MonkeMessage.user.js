@@ -18,7 +18,7 @@
     const style = document.createElement('style');
     style.innerHTML = `#vibe-fixed-panel-min {
         position: fixed;
-        top: 102px;
+        top: 186px;
         right: 30px;
         width: 500px;
         min-height: 158px;
