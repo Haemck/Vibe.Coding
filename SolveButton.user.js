@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Digiseller → Lark: кнопка «Решено» (рядом с «Проблема»)
 // @namespace    https://digiseller.ru/
-// @version      1.1
+// @version      1.2
 // @description  Добавляет кнопку «Решено» СПРАВА от кнопки «Проблема». По клику: Статус → «Решено», Alt+клик → «Продавец заблокирован». Ищет запись по «Номер заказа».
 // @match        https://my.digiseller.ru/asp/inv_of_buyer.asp*
 // @grant        GM_xmlhttpRequest
@@ -25,6 +25,7 @@
     status: 'Статус проблемы',  // single select
   };
 
+  const STATUS_PENDING    = 'Не решено';
   const STATUS_SOLVED     = 'Решено';
   const STATUS_SELLER_BAN = 'Продавец заблокирован';
 
@@ -40,7 +41,6 @@
     .dm-resolved-btn:hover{ background:#edfff1; border-color:#6fc786; }
     .dm-resolved-btn:active{ transform:translateY(1px); }
     .dm-resolved-btn[disabled]{ opacity:.55; cursor:not-allowed; }
-    /* временный контейнер — свой класс, чтобы не мешать «Проблеме» */
     .dm-resolve-fallback{position:absolute;z-index:9998;pointer-events:none}
     .dm-resolve-fallback > div{pointer-events:auto;display:flex;align-items:center}
   `);
@@ -57,6 +57,12 @@
   });
 
   const isFieldNameNotFound = (txt)=>/1254045|FieldNameNotFound/i.test(String(txt||''));
+  const eqNumOrStr = (a,b)=>{
+    const na = Number(String(a).match(/-?\d+/)?.[0] ?? NaN);
+    const nb = Number(String(b).match(/-?\d+/)?.[0] ?? NaN);
+    return (Number.isFinite(na) && Number.isFinite(nb)) ? (na===nb) : (String(a).trim()===String(b).trim());
+  };
+  const eqStatus = (v, target)=> String(v||'').trim().toLowerCase() === String(target||'').trim().toLowerCase();
 
   // ======== Order number from page ========
   function getOrderNumberFromPage(){
@@ -73,7 +79,7 @@
   }
 
   // ======== Auth ========
-  const LS_KEY_LARK_TOKEN = 'lark_token_cache_resolve_v11';
+  const LS_KEY_LARK_TOKEN = 'lark_token_cache_resolve_v12';
   const getLS=(k)=>localStorage.getItem(k);
   const setLS=(k,v)=>localStorage.setItem(k, typeof v==='string'?v:JSON.stringify(v));
 
@@ -92,7 +98,7 @@
   }
 
   // ======== Fields map ========
-  const LS_KEY_FIELDS_INFO = `lark_fields_${LARK_APP_TOKEN}_${LARK_TABLE_ID}_resolve_v11`;
+  const LS_KEY_FIELDS_INFO = `lark_fields_${LARK_APP_TOKEN}_${LARK_TABLE_ID}_resolve_v12`;
   function norm(s){ return String(s||'').toLowerCase().replace(/\s+/g,'').replace(/[«»"']/g,'').replace(/№/g,'no').trim(); }
   function pickByHumanName(items, humanName){
     let it = items.find(f=>f.field_name===humanName);
@@ -131,90 +137,88 @@
     return info;
   }
 
-  // ======== Find record by order ========
-  async function findRecordIdByOrder(orderNumber, info){
+  // ======== Найти ВСЕ записи с этим номером и статусом «Не решено» ========
+  async function findAllPendingRecordIdsByOrder(orderNumber, info){
     const token=await getLarkTenantToken();
-    const orderName = info.order && info.order.name;
-    const orderId   = info.order && info.order.id;
+    const res = [];
 
-    // by field_name
-    if(orderName){
+    // 1) читаем по именам
+    const tryBy = async (fieldKey, keyForOrder, keyForStatus)=>{
       let pageToken='';
       while(true){
-        const base=`https://open.larksuite.com/open-apis/bitable/v1/apps/${encodeURIComponent(LARK_APP_TOKEN)}/tables/${encodeURIComponent(LARK_TABLE_ID)}/records?page_size=200&field_key=field_name`;
+        const base=`https://open.larksuite.com/open-apis/bitable/v1/apps/${encodeURIComponent(LARK_APP_TOKEN)}/tables/${encodeURIComponent(LARK_TABLE_ID)}/records?page_size=200&field_key=${fieldKey}`;
         const url = pageToken ? `${base}&page_token=${encodeURIComponent(pageToken)}` : base;
-        const r   = await gmGet(url, { Authorization:`Bearer ${token}`, 'X-Field-Key':'field_name' });
+        const r   = await gmGet(url, { Authorization:`Bearer ${token}`, 'X-Field-Key':fieldKey });
         if(r.status!==200) throw new Error(`Query HTTP ${r.status}: ${r.responseText}`);
         const d=J(r.responseText);
         if(!d || d.code!==0){
-          if(isFieldNameNotFound(r.responseText)) break;
+          if(isFieldNameNotFound(r.responseText)) return 'retry-other-key';
           else throw new Error('Query error: '+r.responseText);
         }
         const items=(d.data&&d.data.items)||[];
         for(const rec of items){
-          const v = (rec.fields||{})[orderName];
-          if(v===undefined || v===null || v==='') continue;
-          const a = Number(String(v).match(/-?\d+/)?.[0] ?? NaN);
-          const b = Number(String(orderNumber).match(/-?\d+/)?.[0] ?? NaN);
-          if(Number.isFinite(a) && Number.isFinite(b) ? a===b : String(v).trim()===String(orderNumber).trim()){
-            return rec.record_id;
+          const f = rec.fields||{};
+          const orderVal  = f[keyForOrder];
+          const statusVal = f[keyForStatus];
+          if(orderVal===undefined || orderVal===null || orderVal==='') continue;
+          if(eqNumOrStr(orderVal, orderNumber) && eqStatus(statusVal, STATUS_PENDING)){
+            res.push(rec.record_id);
           }
         }
         if(d.data && d.data.has_more && d.data.page_token){ pageToken=d.data.page_token; continue; }
         break;
       }
+      return 'ok';
+    };
+
+    const orderName  = info.order?.name;
+    const statusName = info.status?.name;
+    const orderId    = info.order?.id;
+    const statusId   = info.status?.id;
+
+    if(orderName && statusName){
+      const r = await tryBy('field_name', orderName, statusName);
+      if(r==='ok') return res;
     }
-    // fallback by field_id
-    if(orderId){
-      let pageToken='';
-      while(true){
-        const base=`https://open.larksuite.com/open-apis/bitable/v1/apps/${encodeURIComponent(LARK_APP_TOKEN)}/tables/${encodeURIComponent(LARK_TABLE_ID)}/records?page_size=200&field_key=field_id`;
-        const url = pageToken ? `${base}&page_token=${encodeURIComponent(pageToken)}` : base;
-        const r   = await gmGet(url, { Authorization:`Bearer ${token}`, 'X-Field-Key':'field_id' });
-        if(r.status!==200) throw new Error(`Query HTTP ${r.status}: ${r.responseText}`);
-        const d=J(r.responseText); if(!d || d.code!==0) throw new Error('Query error: '+r.responseText);
-        const items=(d.data&&d.data.items)||[];
-        for(const rec of items){
-          const v = (rec.fields||{})[orderId];
-          if(v===undefined || v===null || v==='') continue;
-          const a = Number(String(v).match(/-?\d+/)?.[0] ?? NaN);
-          const b = Number(String(orderNumber).match(/-?\d+/)?.[0] ?? NaN);
-          if(Number.isFinite(a) && Number.isFinite(b) ? a===b : String(v).trim()===String(orderNumber).trim()){
-            return rec.record_id;
-          }
-        }
-        if(d.data && d.data.has_more && d.data.page_token){ pageToken=d.data.page_token; continue; }
-        break;
-      }
+    if(orderId && statusId){
+      await tryBy('field_id', orderId, statusId);
     }
-    return null;
+    return res;
   }
 
-  // ======== Update status ========
-  async function updateStatus(recordId, statusText, info){
+  // ======== Массовое обновление статуса ========
+  async function updateStatusMany(recordIds, statusText, info){
+    if(!recordIds.length) return 0;
     const token = await getLarkTenantToken();
     const base  = `https://open.larksuite.com/open-apis/bitable/v1/apps/${encodeURIComponent(LARK_APP_TOKEN)}/tables/${encodeURIComponent(LARK_TABLE_ID)}/records`;
-    const fieldsByName = { [info.status.name]: statusText };
-    const fieldsById   = { [info.status.id]:   statusText };
+    const CHUNK = 200; // на всякий пожарный
 
-    try{
-      const r = await gmPost(`${base}/batch_update?field_key=field_name`,
-        { records:[{ record_id: recordId, fields: fieldsByName }] },
-        { Authorization:`Bearer ${token}`, 'X-Field-Key':'field_name' }
-      );
-      const d=J(r.responseText);
-      if(r.status===200 && d && d.code===0) return true;
-      if(isFieldNameNotFound(r.responseText)) throw new Error('fname');
-      throw new Error('update by name failed: '+r.responseText);
-    }catch(_){
-      const r = await gmPost(`${base}/batch_update?field_key=field_id`,
-        { records:[{ record_id: recordId, fields: fieldsById }] },
-        { Authorization:`Bearer ${token}`, 'X-Field-Key':'field_id' }
-      );
-      const d=J(r.responseText);
-      if(r.status===200 && d && d.code===0) return true;
-      throw new Error('update by id failed: '+r.responseText);
+    const makeRecordsByName = (ids)=> ids.map(id=>({ record_id:id, fields:{ [info.status.name]: statusText } }));
+    const makeRecordsById   = (ids)=> ids.map(id=>({ record_id:id, fields:{ [info.status.id]:   statusText } }));
+
+    const doPost = async (fieldKey, recs)=>{
+      const headers = { Authorization:`Bearer ${token}`, 'X-Field-Key':fieldKey, 'Content-Type':'application/json; charset=utf-8' };
+      const url = `${base}/batch_update?field_key=${fieldKey}`;
+      const r = await gmPost(url, { records: recs }, headers);
+      const d = J(r.responseText);
+      if(!(r.status===200 && d && d.code===0)) throw new Error(r.responseText||('HTTP '+r.status));
+    };
+
+    let updated = 0;
+    for(let i=0;i<recordIds.length;i+=CHUNK){
+      const slice = recordIds.slice(i, i+CHUNK);
+      try{
+        await doPost('field_name', makeRecordsByName(slice));
+      }catch(e){
+        if(isFieldNameNotFound(e && e.message || '')) {
+          // обновим маппинг и попробуем снова
+          await ensureFieldsInfo(true);
+        }
+        await doPost('field_id', makeRecordsById(slice));
+      }
+      updated += slice.length;
     }
+    return updated;
   }
 
   // ======== UI: make button ========
@@ -225,6 +229,7 @@
     btn.title='Клик: «Решено» • Alt+Клик: «Продавец заблокирован»';
     btn.textContent='Решено';
     let busy=false;
+
     btn.addEventListener('click', async (e)=>{
       if(busy) return;
       busy=true;
@@ -233,21 +238,29 @@
         btn.textContent='Ищу...';
         const order = getOrderNumberFromPage();
         if(!order){ btn.textContent='Не найдено'; setTimeout(()=>btn.textContent=prev,1100); busy=false; return; }
+
         let info = await ensureFieldsInfo(false);
-        let recId = await findRecordIdByOrder(order, info);
-        if(!recId){
+        let recordIds = await findAllPendingRecordIdsByOrder(order, info);
+        if(!recordIds.length){
           info = await ensureFieldsInfo(true); // на случай переименований
-          recId = await findRecordIdByOrder(order, info);
-          if(!recId){ btn.textContent='Не найдено'; setTimeout(()=>btn.textContent=prev,1100); busy=false; return; }
+          recordIds = await findAllPendingRecordIdsByOrder(order, info);
         }
-        btn.textContent='Обновляю...';
-        await updateStatus(recId, e.altKey?STATUS_SELLER_BAN:STATUS_SOLVED, info);
-        btn.textContent='Готово!';
+        if(!recordIds.length){
+          btn.textContent='0 обновлено';
+          setTimeout(()=>btn.textContent=prev,1400);
+          busy=false;
+          return;
+        }
+
+        const target = e.altKey ? STATUS_SELLER_BAN : STATUS_SOLVED;
+        btn.textContent = `Обновляю ${recordIds.length}...`;
+        const n = await updateStatusMany(recordIds, target, info);
+        btn.textContent = `Готово! (${n})`;
       }catch(err){
         console.error('[ResolveButton:Lark]', err);
         btn.textContent='Ошибка';
       }finally{
-        setTimeout(()=>btn.textContent='Решено',1400);
+        setTimeout(()=>btn.textContent='Решено', 1600);
         busy=false;
       }
     });
@@ -265,7 +278,6 @@
     return true;
   }
 
-  // Fallback container (own class, won’t block original mount)
   function mountFallback(){
     if(document.querySelector('.dm-resolved-btn')) return;
     const back = Array.from(document.querySelectorAll('small font[color="#538CA1"]'))
@@ -283,19 +295,14 @@
   }
 
   function boot(){
-    // 1) попытка сразу рядом с «Проблема»
     if(mountNextToProblem()) return;
 
-    // 2) наблюдаем появление «Проблема» и монтируемся справа
     const mo = new MutationObserver(()=>{
       if(mountNextToProblem()){ mo.disconnect(); }
     });
     mo.observe(document.documentElement, {subtree:true, childList:true});
 
-    // 3) временная кнопка, если пока нет «Проблема»
     setTimeout(()=>{ if(!document.querySelector('.dm-resolved-btn')) mountFallback(); }, 600);
-
-    // 4) если «Проблема» появится позже — переедем к ней (observer активен)
   }
 
   window.addEventListener('DOMContentLoaded', boot);
