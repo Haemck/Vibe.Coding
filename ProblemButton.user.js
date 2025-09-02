@@ -1,46 +1,42 @@
 // ==UserScript==
-// @name         Digiseller: Кнопка Проблемы
+// @name         Digiseller: Кнопка Проблемы 
 // @namespace    https://digiseller.ru/
-// @version      4.9
-// @description  Ищет первую запись с пустым «Номер заказа» и обновляет её; если нет — создаёт новую. Поиск пустой строки — по ИМЕНИ (field_key=field_name) с фолбэком по field_id. Запись: по именам, при ошибке — по id. Поле «Продавец» — ТЕКСТ, ник берётся из <span class="dm-seller-link">…</span>.
-// @author       vibe
+// @version      5.1
+// @description  Обновляет первую запись с пустым «Номер заказа» (без ложных срабатываний даже после изменения схемы), иначе создаёт новую. Продавец — ТЕКСТ из span.dm-seller-link. Оптимистичный UI: мгновенно «Улетело ✓», запрос — фоном, статус — тостом.
 // @match        https://my.digiseller.ru/asp/inv_of_buyer.asp*
 // @grant        GM_xmlhttpRequest
-// @updateURL    https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/ProblemButton.user.js
-// @downloadURL  https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/ProblemButton.user.js
 // @grant        GM_addStyle
 // @connect      open.larksuite.com
+// @updateURL    https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/ProblemButton.user.js
+// @downloadURL  https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/ProblemButton.user.js
 // ==/UserScript==
-
 (function () {
   'use strict';
 
-  // =================== КОНФИГ Lark ===================
+  // ===== Lark config =====
   const LARK_APP_ID     = 'cli_a81cb0e116b4102f';
   const LARK_APP_SECRET = 'PxOqztub8iur2iEXsynuCbjG8QqQKb48';
   const LARK_APP_TOKEN  = 'Md1BbzhFDawwyNsvRggl8ngqgle';
   const LARK_TABLE_ID   = 'tblDJRpsVKzzScRx';
 
-  // Имена столбцов — как в базе
   const FIELD_NAMES = {
-    order:    'Номер заказа',     // Число
-    date:     'Дата',             // Дата (ms epoch)
-    seller:   'Продавец',         // ТЕКСТ (ник)
-    status:   'Статус проблемы',  // Одиночный (Single select)
-    comment:  'Комментарий',      // Текст
-    operator: 'ФИО',              // Текст
+    order:    'Номер заказа',     // Number
+    date:     'Дата',             // Date (ms epoch)
+    seller:   'Продавец',         // Text (ник)
+    status:   'Статус проблемы',  // Single select
+    comment:  'Комментарий',      // Text
+    operator: 'ФИО',              // Text
   };
 
-  // Опциональный дефолт
   const SET_DEFAULT_STATUS  = true;
   const DEFAULT_STATUS_TEXT = 'Не решено';
 
-  // =================== КЭШИ ===================
+  // ===== LS keys =====
   const LS_KEY_LARK_TOKEN   = 'lark_token_cache';
   const LS_KEY_FIELDS_INFO  = `lark_fields_${LARK_APP_TOKEN}_${LARK_TABLE_ID}`;
   const LS_KEY_OPERATOR     = 'bananza_operator_name';
 
-  // =================== Стили ===================
+  // ===== Styles (button + toasts) =====
   GM_addStyle(`
     .dm-floating-export-wrap{position:absolute;z-index:9999;display:flex;align-items:center;top:0;left:0;pointer-events:none}
     .dm-floating-export-inner{pointer-events:auto;display:flex;align-items:center;min-width:0}
@@ -58,9 +54,13 @@
     .dm-export-operator-btn{background:#fff4f4;border:1.5px solid #ffb8b8;border-radius:4px;color:#ba6fb0;font-size:18px;font-weight:600;
       padding:2px 6px;cursor:pointer;margin-left:7px;height:32px;min-width:27px;outline:none;display:flex;align-items:center;opacity:.34;transition:background .10s,border-color .10s,color .15s,opacity .15s}
     .dm-export-operator-field{font-size:15px;margin-left:7px;width:170px;padding:2px 12px;border:1.5px solid #ffb8b8;border-radius:4px;background:#fff8f8;color:#4a3841;outline:none;transition:box-shadow .13s;flex:none;display:block}
+
+    .dm-toast{position:fixed;right:16px;bottom:16px;z-index:99999;background:#ffffff;border:1px solid #e4e4e4;border-left:4px solid #5cb85c;
+      box-shadow:0 6px 24px rgba(0,0,0,.12);padding:10px 14px;border-radius:10px;font:600 14px/1.35 Segoe UI, Inter, Arial;color:#1b1b1b;opacity:.98}
+    .dm-toast.err{border-left-color:#d9534f}
   `);
 
-  // =================== Хелперы ===================
+  // ===== Helpers =====
   const J = (t)=>{try{return JSON.parse(t)}catch{return null}};
   const getLS=(k,d=null)=>{const v=localStorage.getItem(k);return v==null?d:v;};
   const setLS=(k,v)=>localStorage.setItem(k, typeof v==='string'?v:JSON.stringify(v));
@@ -74,7 +74,7 @@
   function norm(s){return String(s||'').toLowerCase().replace(/\s+/g,'').replace(/[«»"']/g,'').replace(/№/g,'no').trim();}
   const isFieldNameNotFound = (txt)=>/1254045|FieldNameNotFound/i.test(String(txt||''));
 
-  // ===== продавец из span.dm-seller-link (ник) + заказ =====
+  // seller nickname
   function getSellerNickname(){
     const el = document.querySelector('span.dm-seller-link[title*="Открыть профиль продавца"]');
     return el ? el.textContent.trim() : '';
@@ -82,13 +82,11 @@
   function getSellerAndOrder(){
     let seller = getSellerNickname();
     let order = '';
-    // Заказ из таблицы
     document.querySelectorAll('tr').forEach(tr=>{
       const label=tr.querySelector('.namerow');
       const val=tr.querySelector('.inforow');
       if(!label||!val) return;
       if(!seller && /ПРОДАВЕЦ/i.test(label.innerText)){
-        // фолбэк, если вдруг нет span
         seller = val.textContent.replace(/\[\s*подробнее\s*\]/i,'').trim();
       }
       if(label.innerText.replace(/\s/g,'').includes('ЗАКАЗ№')){
@@ -98,30 +96,20 @@
     return { seller, order };
   }
 
-  // =================== HTTP ===================
+  // ===== HTTP =====
   function gmRequest({method,url,headers={},data,timeout=30000}){
     return new Promise((resolve,reject)=>{
-      GM_xmlhttpRequest({method,url,headers,data,timeout,
-        onload:r=>resolve(r),
-        onerror:e=>reject(e),
-        ontimeout:()=>reject(new Error('Request timeout'))
-      });
+      GM_xmlhttpRequest({method,url,headers,data,timeout,onload:r=>resolve(r),onerror:e=>reject(e),ontimeout:()=>reject(new Error('Request timeout'))});
     });
   }
   const gmGet=(url,headers={})=>gmRequest({method:'GET',url,headers});
-  const gmPostJSON=(url,json,headers={})=>gmRequest({
-    method:'POST',
-    url,
-    headers:Object.assign({'Content-Type':'application/json; charset=utf-8'},headers),
-    data:JSON.stringify(json||{})
-  });
+  const gmPostJSON=(url,json,headers={})=>gmRequest({method:'POST',url,headers:Object.assign({'Content-Type':'application/json; charset=utf-8'},headers),data:JSON.stringify(json||{})});
 
-  // =================== Auth ===================
+  // ===== Auth =====
   async function getLarkTenantToken(){
     const c=J(getLS(LS_KEY_LARK_TOKEN));
     if(c && c.token && c.exp && Date.now()<c.exp-60_000) return c.token;
-    const r=await gmPostJSON('https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal',
-      { app_id:LARK_APP_ID, app_secret:LARK_APP_SECRET });
+    const r=await gmPostJSON('https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal',{ app_id:LARK_APP_ID, app_secret:LARK_APP_SECRET });
     if(r.status!==200) throw new Error(`Auth HTTP ${r.status}: ${r.responseText}`);
     const d=J(r.responseText); if(!d || d.code!==0 || !d.tenant_access_token) throw new Error('Auth error: '+r.responseText);
     const token=d.tenant_access_token, expMs=Date.now()+((d.expire?d.expire:7200)*1000);
@@ -129,7 +117,7 @@
     return token;
   }
 
-  // =================== Схема таблицы ===================
+  // ===== Schema =====
   async function listFieldsAll(){
     const token=await getLarkTenantToken();
     let url=`https://open.larksuite.com/open-apis/bitable/v1/apps/${encodeURIComponent(LARK_APP_TOKEN)}/tables/${encodeURIComponent(LARK_TABLE_ID)}/fields?page_size=200`;
@@ -171,12 +159,12 @@
     return info;
   }
 
-  // =================== Сбор полей (по ИМЕНАМ / по ID) ===================
+  // ===== Build fields =====
   function buildFieldsByName(values, info){
     const F={}, k=f=>f.name;
     if(info.order && values.order!=null){ const n=castInt(values.order); if(n!==undefined) F[k(info.order)]=n; }
     if(info.date && values.dateMs){ F[k(info.date)]=values.dateMs; }
-    if(info.seller && values.seller){ const s=String(values.seller||'').trim(); if(s) F[k(info.seller)]=s; } // <-- ТЕКСТ
+    if(info.seller){ const s=String(values.seller||'').trim(); if(s) F[k(info.seller)]=s; }
     if(info.operator && values.operator){ F[k(info.operator)]=String(values.operator); }
     if(info.comment && values.comment){ F[k(info.comment)]=String(values.comment); }
     if(SET_DEFAULT_STATUS && info.status){ F[k(info.status)]=DEFAULT_STATUS_TEXT; }
@@ -186,67 +174,55 @@
     const F={}, k=f=>f.id;
     if(info.order && values.order!=null){ const n=castInt(values.order); if(n!==undefined) F[k(info.order)]=n; }
     if(info.date && values.dateMs){ F[k(info.date)]=values.dateMs; }
-    if(info.seller && values.seller){ const s=String(values.seller||'').trim(); if(s) F[k(info.seller)]=s; } // <-- ТЕКСТ
+    if(info.seller){ const s=String(values.seller||'').trim(); if(s) F[k(info.seller)]=s; }
     if(info.operator && values.operator){ F[k(info.operator)]=String(values.operator); }
     if(info.comment && values.comment){ F[k(info.comment)]=String(values.comment); }
     if(SET_DEFAULT_STATUS && info.status){ F[k(info.status)]=DEFAULT_STATUS_TEXT; }
     return F;
   }
 
-  // =================== НАЙТИ ПЕРВУЮ ПУСТУЮ ===================
+  // ===== Find first EMPTY by field_id (safe) =====
   async function findFirstEmptyOrderRecordId(info){
     const token=await getLarkTenantToken();
-    const orderName = info.order && info.order.name;
-    const orderId   = info.order && info.order.id;
+    const orderId = info.order && info.order.id;
+    if(!orderId) return null;
 
-    // 1) по ИМЕНИ
-    if(orderName){
-      let pageToken='';
-      while(true){
-        const base=`https://open.larksuite.com/open-apis/bitable/v1/apps/${encodeURIComponent(LARK_APP_TOKEN)}/tables/${encodeURIComponent(LARK_TABLE_ID)}/records?page_size=200&field_key=field_name`;
-        const url = pageToken ? `${base}&page_token=${encodeURIComponent(pageToken)}` : base;
-        const r = await gmGet(url, { Authorization:`Bearer ${token}`, 'X-Field-Key':'field_name' });
-        if(r.status!==200) throw new Error(`Query HTTP ${r.status}: ${r.responseText}`);
-        const data=J(r.responseText);
-        if(!data || data.code!==0){
-          if(isFieldNameNotFound(r.responseText)) break; // к фолбэку по id
-          else throw new Error('Query error: '+r.responseText);
-        }
-        const items=(data.data && data.data.items) || [];
-        for(const rec of items){
-          const fields = rec.fields || {};
-          const v = fields[orderName];
-          if(v === undefined || v === null || v === '') return rec.record_id;
-        }
-        if(data.data && data.data.has_more && data.data.page_token) { pageToken=data.data.page_token; continue; }
-        break;
-      }
-    }
+    let pageToken='';
+    let candidateMissing=null; // первая запись БЕЗ ключа (считаем пустой только если ключ точно верный)
+    let seenNonEmptyUnderKey=false; // хотя бы в одной записи ключ присутствует и не пуст
+    const headers = { Authorization:`Bearer ${token}`, 'X-Field-Key':'field_id' };
 
-    // 2) фолбэк по ID
-    if(orderId){
-      let pageToken='';
-      while(true){
-        const base=`https://open.larksuite.com/open-apis/bitable/v1/apps/${encodeURIComponent(LARK_APP_TOKEN)}/tables/${encodeURIComponent(LARK_TABLE_ID)}/records?page_size=200&field_key=field_id`;
-        const url = pageToken ? `${base}&page_token=${encodeURIComponent(pageToken)}` : base;
-        const r = await gmGet(url, { Authorization:`Bearer ${token}`, 'X-Field-Key':'field_id' });
-        if(r.status!==200) throw new Error(`Query HTTP ${r.status}: ${r.responseText}`);
-        const data=J(r.responseText); if(!data || data.code!==0) throw new Error('Query error: '+r.responseText);
-        const items=(data.data && data.data.items) || [];
-        for(const rec of items){
-          const fields = rec.fields || {};
+    while(true){
+      const base=`https://open.larksuite.com/open-apis/bitable/v1/apps/${encodeURIComponent(LARK_APP_TOKEN)}/tables/${encodeURIComponent(LARK_TABLE_ID)}/records?page_size=200&field_key=field_id`;
+      const url = pageToken ? `${base}&page_token=${encodeURIComponent(pageToken)}` : base;
+      const r = await gmGet(url, headers);
+      if(r.status!==200) throw new Error(`Query HTTP ${r.status}: ${r.responseText}`);
+      const data=J(r.responseText); if(!data || data.code!==0) throw new Error('Query error: '+r.responseText);
+
+      const items=(data.data && data.data.items) || [];
+      for(const rec of items){
+        const fields = rec.fields || {};
+        if(Object.prototype.hasOwnProperty.call(fields, orderId)){
           const v = fields[orderId];
-          if(v === undefined || v === null || v === '') return rec.record_id;
+          if(v === '' || v === null){ return rec.record_id; } // явно пустое значение
+          else { seenNonEmptyUnderKey = true; }
+        } else if(candidateMissing===null){
+          candidateMissing = rec.record_id; // нет ключа
         }
-        if(data.data && data.data.has_more && data.data.page_token) { pageToken=data.data.page_token; continue; }
-        break;
       }
+      if(data.data && data.data.has_more && data.data.page_token){ pageToken=data.data.page_token; continue; }
+      break;
     }
 
+    // Если мы уверены, что ключ правильный (видели его хотя бы у одной записи),
+    // то отсутствие ключа у записи трактуем как пустоту.
+    if(seenNonEmptyUnderKey && candidateMissing){ return candidateMissing; }
+
+    // Иначе — лучше создать новую (чтобы не перетереть чужие данные).
     return null;
   }
 
-  // =================== POST с ретраем ===================
+  // ===== POST with retry =====
   async function postWithRetry(url, headers, payload){
     let tries=4;
     while(tries-- > 0){
@@ -270,8 +246,8 @@
     throw new Error('Bitable: too many retries');
   }
 
-  // =================== UPDATE-или-CREATE ===================
-  async function upsert(values){
+  // ===== Upsert =====
+  async function upsert(values, {forceCreate=false}={}){
     const token=await getLarkTenantToken();
     let info = await ensureFieldsInfo(false);
 
@@ -282,69 +258,54 @@
     const hdrName = { Authorization:`Bearer ${token}`, 'Content-Type':'application/json; charset=utf-8', 'X-Field-Key':'field_name' };
     const hdrId   = { Authorization:`Bearer ${token}`, 'Content-Type':'application/json; charset=utf-8', 'X-Field-Key':'field_id' };
 
-    const emptyId = await findFirstEmptyOrderRecordId(info);
+    const emptyId = forceCreate ? null : await findFirstEmptyOrderRecordId(info);
 
     async function tryByNameUpdate(recId){
-      const url = `${base}/batch_update?field_key=field_name`;
-      return postWithRetry(url, hdrName, { records:[{ record_id: recId, fields: fieldsByName }] });
+      return postWithRetry(`${base}/batch_update?field_key=field_name`, hdrName, { records:[{ record_id: recId, fields: fieldsByName }] });
     }
     async function tryByIdUpdate(recId){
-      const url = `${base}/batch_update?field_key=field_id`;
-      return postWithRetry(url, hdrId, { records:[{ record_id: recId, fields: fieldsById }] });
+      return postWithRetry(`${base}/batch_update?field_key=field_id`, hdrId, { records:[{ record_id: recId, fields: fieldsById }] });
     }
     async function tryByNameCreate(){
-      const url = `${base}/batch_create?field_key=field_name`;
-      return postWithRetry(url, hdrName, { records:[{ fields: fieldsByName }] });
+      return postWithRetry(`${base}/batch_create?field_key=field_name`, hdrName, { records:[{ fields: fieldsByName }] });
     }
     async function tryByIdCreate(){
-      const url = `${base}/batch_create?field_key=field_id`;
-      return postWithRetry(url, hdrId, { records:[{ fields: fieldsById }] });
+      return postWithRetry(`${base}/batch_create?field_key=field_id`, hdrId, { records:[{ fields: fieldsById }] });
     }
 
     if(emptyId){
       try{
         return await tryByNameUpdate(emptyId);
       }catch(e1){
-        const t=String(e1 && e1.message || '');
-        if(isFieldNameNotFound(t)){
+        if(isFieldNameNotFound(String(e1 && e1.message || ''))){
           delLS(LS_KEY_FIELDS_INFO);
           info = await ensureFieldsInfo(true);
           const retryByName = buildFieldsByName(values, info);
-          try{
-            const url = `${base}/batch_update?field_key=field_name`;
-            return await postWithRetry(url, hdrName, { records:[{ record_id: emptyId, fields: retryByName }] });
-          }catch(e2){
-            return await tryByIdUpdate(emptyId);
-          }
+          try{ return await postWithRetry(`${base}/batch_update?field_key=field_name`, hdrName, { records:[{ record_id: emptyId, fields: retryByName }] }); }
+          catch{ return await tryByIdUpdate(emptyId); }
         }
         return await tryByIdUpdate(emptyId);
       }
     }
 
-    // пустых нет — создаём
+    // пустых нет или не доверяем ключу — создаём
     try{
       return await tryByNameCreate();
     }catch(e1){
-      const t=String(e1 && e1.message || '');
-      if(isFieldNameNotFound(t)){
+      if(isFieldNameNotFound(String(e1 && e1.message || ''))){
         delLS(LS_KEY_FIELDS_INFO);
         info = await ensureFieldsInfo(true);
         const retryByName = buildFieldsByName(values, info);
-        try{
-          const url = `${base}/batch_create?field_key=field_name`;
-          return await postWithRetry(url, hdrName, { records:[{ fields: retryByName }] });
-        }catch(e2){
-          return await tryByIdCreate();
-        }
+        try{ return await postWithRetry(`${base}/batch_create?field_key=field_name`, hdrName, { records:[{ fields: retryByName }] }); }
+        catch{ return await tryByIdCreate(); }
       }
       return await tryByIdCreate();
     }
   }
 
-  // =================== UI ===================
-  let sending=false;
-
-  function resetBtn(btn,text){ btn.innerHTML=text; btn.classList.remove('expanded','has-operator'); btn.disabled=false; btn.style.width=''; sending=false; }
+  // ===== UI & UX =====
+  let busyUntil = 0;
+  function resetBtn(btn,text){ btn.innerHTML=text; btn.classList.remove('expanded','has-operator'); btn.disabled=false; btn.style.width=''; }
   function autosizeInput(input,max){
     const s=document.createElement('span'); s.style.position='absolute'; s.style.left='-9999px'; s.style.visibility='hidden';
     const cs=getComputedStyle(input); s.style.font=cs.font; s.style.fontSize=cs.fontSize; s.style.fontWeight=cs.fontWeight; s.style.letterSpacing=cs.letterSpacing;
@@ -353,24 +314,30 @@
     input.addEventListener('input',resize); input.addEventListener('focus',resize); input.addEventListener('blur',resize); setTimeout(resize,12);
     return ()=>document.body.removeChild(s);
   }
+  function toast(msg, ok=true){
+    const t=document.createElement('div'); t.className='dm-toast'+(ok?'':' err'); t.textContent=msg;
+    document.body.appendChild(t);
+    setTimeout(()=>{ t.style.opacity='0.0'; t.style.transform='translateY(6px)'; }, 1800);
+    setTimeout(()=> t.remove(), 2400);
+  }
   function getToday(){ return getTodayStr(); }
 
-  async function send(orderRaw, today, seller, comment, operator, btn){
-    try{
-      sending=true; btn.classList.remove('expanded','has-operator'); btn.style.width=''; btn.innerHTML='Отправляем...'; btn.disabled=true;
-      const values = {
-        order: orderRaw,               // → Номер заказа (Число)
-        dateMs: yyyymmddToMs(today),   // → Дата (ms epoch)
-        seller,                        // → Продавец (ТЕКСТ: ник)
-        comment: comment || '',        // → Комментарий
-        operator: operator || ''       // → ФИО (текст)
-      };
-      await upsert(values);
-      resetBtn(btn,'Готово!');
-    }catch(e){
+  function sendOptimistic(orderRaw, today, seller, comment, operator, btn, opts){
+    resetBtn(btn,'Улетело ✓');
+    setTimeout(()=>resetBtn(btn,'Проблема'), 900);
+
+    upsert({
+      order: orderRaw,
+      dateMs: yyyymmddToMs(today),
+      seller,
+      comment: comment || '',
+      operator: operator || ''
+    }, opts).then(()=> toast('Записано в Lark ✓', true)
+    ).catch(e=>{
       console.error('[ProblemButton:Lark]', e);
-      resetBtn(btn,'Ошибка!');
-    }finally{ setTimeout(()=>resetBtn(btn,'Проблема'),1400); }
+      toast('Ошибка записи в Lark', false);
+      btn.innerHTML='Ошибка!'; setTimeout(()=>resetBtn(btn,'Проблема'),1300);
+    });
   }
 
   function makeButton(){
@@ -378,8 +345,9 @@
     btn.className='dm-cb-link dm-export-btn-morph'; btn.type='button'; btn.innerHTML='Проблема'; btn.title='Заполнить/создать строку в Lark';
     let opened=false, opInput=null, cleanup=null;
 
-    btn.addEventListener('click', ()=>{
-      if(sending||opened) return;
+    btn.addEventListener('click', (ev)=>{
+      const now=Date.now(); if(now<busyUntil) return;
+      if(opened) return;
       opened=true; btn.classList.add('expanded'); btn.style.width='390px'; btn.innerHTML='';
 
       const input=document.createElement('input'); input.type='text'; input.placeholder='Комментарий...'; input.className='dm-export-comment-morph'; input.maxLength=150;
@@ -400,21 +368,22 @@
       }
       opBtn.addEventListener('click',(e)=>{e.stopPropagation();toggleOp();});
 
-      function finish(){
-        if(sending) return;
+      function finish(evt){
         opened=false; btn.blur(); if(cleanup) cleanup();
+        const forceCreate = evt && evt.altKey; // ALT + Enter/клик => создать новую
         const { seller, order } = getSellerAndOrder();
         const comment = input.value.trim();
         const operator = opInput ? opInput.value.trim() : getOp();
         const today = getToday();
-        if(!order){ resetBtn(btn,'Не найдено!'); setTimeout(()=>resetBtn(btn,'Проблема'),1300); return; }
+        if(!order){ resetBtn(btn,'Не найдено!'); setTimeout(()=>resetBtn(btn,'Проблема'),1200); return; }
         setOp(operator||'');
-        send(order, today, seller, comment, operator, btn);
+        busyUntil = Date.now()+600;
+        sendOptimistic(order, today, seller, comment, operator, btn, {forceCreate});
       }
 
-      input.addEventListener('keydown',(e)=>{ if(e.key==='Enter') finish(); if(e.key==='Escape'){ opened=false; if(cleanup) cleanup(); resetBtn(btn,'Проблема'); }});
+      input.addEventListener('keydown',(e)=>{ if(e.key==='Enter') finish(e); if(e.key==='Escape'){ opened=false; if(cleanup) cleanup(); resetBtn(btn,'Проблема'); }});
       sendBtn.addEventListener('click', finish);
-      input.addEventListener('blur', ()=>{ setTimeout(()=>{ if(document.activeElement!==sendBtn && document.activeElement!==opInput && document.activeElement!==opBtn && opened && !sending){ opened=false; if(cleanup) cleanup(); resetBtn(btn,'Проблема'); }},150); });
+      input.addEventListener('blur', ()=>{ setTimeout(()=>{ if(document.activeElement!==sendBtn && document.activeElement!==opInput && document.activeElement!==opBtn && opened){ opened=false; if(cleanup) cleanup(); resetBtn(btn,'Проблема'); }},150); });
 
       setTimeout(()=>input.focus(),80);
       btn.appendChild(input); btn.appendChild(sendBtn); btn.appendChild(opBtn);
