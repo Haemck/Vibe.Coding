@@ -19,7 +19,7 @@
     style.innerHTML = `
     /* --- Панель --- */
     #vibe-fixed-panel-min {
-        position: fixed; top: 70px; right: 30px; width: 500px; min-height: 158px;
+        position: fixed; top: 186px; right: 30px; width: 500px; min-height: 158px;
         background: #f7f9fa; border: 1.6px solid #bde8bc; border-radius: 12px; z-index: 99999;
         display: flex; flex-direction: column; padding: 18px 16px 10px 16px; gap: 10px; box-sizing: border-box;
         font-family: Verdana, Arial, sans-serif; box-shadow: 0 1px 12px #233c2010; transition: border-color .18s, box-shadow .15s;
