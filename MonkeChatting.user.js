@@ -1,704 +1,770 @@
 // ==UserScript==
-// @name         DigiSeller: MonkeChatting
+// @name         Digiseler: Bananza Mailz
 // @namespace    http://tampermonkey.net/
-// @version      3.6.9
-// @description  Bubbles, лайтбокс (зум), верхние кнопки, ник (копировать ник/Ctrl+seller_id), мягкое «удалить», поиск. Справа — панель: статус (только значение), по центру холд (пустой=7), под ним онлайн; слева снизу — рейтинг. Надёжный ОДНОКРАТНЫЙ скролл к сообщению из поиска. SPA/ajax-совместимо.
+// @version      6.2
+// @description  Bananza Mailz — авторассылка с максимально лояльной проверкой (игнор пустых строк, html-entities и кавычек). Полный лог! 🦍🍌 + устойчивые парсеры + не блокируемся при отсутствии истории сообщений.
 // @author       vibe.coding
-// @match        https://my.digiseller.ru/asp/seller_messages.asp*
+// @match        https://my.digiseller.ru/*
 // @grant        GM_xmlhttpRequest
 // @connect      my.digiseller.ru
-// @run-at       document-end
-// @updateURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/MonkeChatting.user.js
-// @downloadURL https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/MonkeChatting.user.js
+// @updateURL    https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/Bananza%20Mailz.user.js
+// @downloadURL  https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/Bananza%20Mailz.user.js
 // ==/UserScript==
 
-(function(){
-  'use strict';
+(function() {
+    'use strict';
 
-  const ROW_ID='vibe-btn-fake-row';
-  const COMMENT_ID='vibe-comment-panel';
-  const ONLINE_ID='vibe-online-pill'; // старый бейдж (убираем)
+    /** ================= КОНФИГ ================= */
+    const APPS_SCRIPT_API_URL   = 'https://script.google.com/macros/s/AKfycbzKBKQ7OkXV_nEpdvP4y5QZj6lHFQg2p8oNE_gwCU_B3MPFjyqWDbQPNXq7OeaP74Ya/exec';
+    const BANANZA_STATE         = 'bananza_mailz_open';
+    const BANANZA_STORE         = 'bananza_mailz_data';
+    const BANANZA_TTL_MS        = 1000 * 60 * 30;
+    const BANANZA_SEND_DELAY_MS = 2000;
+    const SHEET_URL             = "https://docs.google.com/spreadsheets/d/1mI9IbQ0DMAi6ZIb3B9PrkIL1wrl8AtWe_NhcHvI34rY/edit?usp=sharing";
 
-  // Глобальное состояние
-  const ST={
-    initedOnce:false,
-    lastUrl:location.href,
-    lastMutationRun:0,
-    infoCache:{},
-    hashScrolledRaw:null // <- чтобы скроллить по hash ровно один раз
-  };
+    const DEBUG_VERBOSE = true;       // подробные логи
+    const HTML_SNIPPET_LIMIT = 1200;  // сколько символов HTML ответа показывать в логе
+    const VERIFY_RETRY_DELAY = 1500;  // вторая попытка забора сообщения после отправки
 
-  // ---------- CSS ----------
-  const css=`
-/* строка фейк-кнопок */
-#${ROW_ID}{
-  display:flex; gap:22px; flex-wrap:wrap; z-index:4999; position:relative!important;
-  width:max-content; max-width:calc(100vw - 60px); pointer-events:none;
-  margin:-30px 0 10px 23px!important;
-}
-.vibe-btn-fake{ display:inline-flex; align-items:center; justify-content:center; min-width:178px; padding:10px 28px;
-  font-size:12px; font-family:'Segoe UI',Consolas,Arial,sans-serif; border-radius:9px; border:1.6px solid #bde8bc; background:#e6f9ed; color:#259960; font-weight:600;
-  cursor:pointer; margin:0 6px 0 0; user-select:none; pointer-events:auto; transition:background .14s, border-color .14s, color .14s, transform .08s; }
-.vibe-btn-fake:hover{ background:#d5f5e3!important; border-color:#82d29d!important; color:#197b48!important; }
-.vibe-btn-fake:active{ transform:scale(.98); background:#b6edd2!important; border-color:#5ad48b!important; }
-.vibe-btn-fake-black{ color:#23272b!important; background:#eaeef2!important; border:1.8px solid #7b92a7!important; font-weight:700; }
-.vibe-btn-fake-black:hover{ background:#d5dae3!important; border-color:#657899!important; }
+    /** =============== СТЕЙТ =============== */
+    let sellers = [], message = '', logs = [], errors = [];
+    let isSending = false, monkeProgress = 0, cancel = false, pausedAt = 0;
+    let lastUpdate = 0;
+    let bananzaPanel = null;
+    let monkeBtn = null;
 
-/* ник продавца (копирование) */
-.vibe-btn-nick{ display:inline-flex; align-items:center; justify-content:center; min-width:116px; padding:10px 18px; font-size:13px;
-  font-family:'Segoe UI',Consolas,Arial,sans-serif; border-radius:9px; border:1.8px solid #ffd98a; background:#fff8e1; color:#996c15; font-weight:600;
-  margin:0 0 0 3px; user-select:none; pointer-events:auto; transition:background .15s,border-color .15s,color .13s,transform .08s; }
-.vibe-btn-nick:hover{ background:#fff0c7!important; border-color:#fbbf24!important; color:#bf8206!important; }
-.vibe-btn-nick.copied{ background:#ffeaa7!important; border-color:#96e377!important; color:#378812!important; }
+    /** =============== УТИЛИТЫ НОРМАЛИЗАЦИИ/СРАВНЕНИЯ =============== */
+    function decodeHtmlEntities(str) {
+        if (!str) return '';
+        const t = document.createElement('textarea');
+        t.innerHTML = str;
+        return t.value;
+    }
+    function normalizeForCompare(text) {
+        // БАЗОВО: CRLF → LF, декод HTML-сущностей, унификация пробелов/кавычек
+        let s = (text || '')
+            .replace(/\r\n|\r/g, '\n')
+            .replace(/\u00A0/g, ' '); // NBSP → space
+        s = decodeHtmlEntities(s)
+            .replace(/&gt;/g, '>')
+            .replace(/&lt;/g, '<')
+            .replace(/&amp;/g, '&')
+            .replace(/&quot;/g, '"')
+            .replace(/&#039;/g, "'");
 
-/* поиск */
-#vibe-searchbox-wrap{ display:inline-flex; align-items:center; pointer-events:auto; position:relative; }
-#vibe-search-input{ height:36px; padding:0 14px; min-width:230px;
-  border:1.6px solid #bde8bc; border-radius:9px; background:#e6f9ed; color:#259960; font-weight:600; outline:none; font-size:13px; font-family:'Segoe UI',Consolas,Arial,sans-serif; }
-#vibe-search-input::placeholder{ color:#55b285; font-weight:600; opacity:.9; }
-#vibe-search-results{ display:none; position:absolute; top:42px; left:0; width:420px; max-width:96vw; max-height:360px; overflow:auto;
-  background:#fff; border:1px solid #c3c3c3; border-radius:10px; box-shadow:0 2px 14px rgba(80,90,140,.14); z-index:4999; }
+        // Замены «косметики»
+        s = s
+            .replace(/[\u200B-\u200D\uFEFF]/g, '')     // zero-width
+            .replace(/[“”«»]/g, '"')                   // кавычки в прямые
+            .replace(/[‘’]/g, "'")
+            .replace(/[ \t]+/g, ' ');                  // множественные пробелы
 
-/* bubbles */
-.vibe-msg-bubble{ border-radius:10px; padding:5px 11px; max-width:65vw; min-width:65vw; border:1px solid #e0e7ef; background:#f8fafd; color:#23272b; font:12px/1.16 Verdana,Arial,sans-serif!important; margin:2px 0; }
-.vibe-msg-out .vibe-msg-bubble{ background:#e4fbe4!important; border-color:#bde8bc!important; }
-.vibe-msg-text-meta{ display:flex; justify-content:space-between; align-items:flex-end; gap:6px; width:100%; min-height:18px; }
-.vibe-msg-meta{ display:inline-block; background:#e4e8ee; color:#8294b6!important; border:none!important; border-radius:9px!important; font:12px/1.16 Verdana,Arial,sans-serif!important; padding:2px 10px; margin:0 0 0 6px!important; white-space:nowrap; opacity:.97; }
+        let lines = s.split('\n').map(x => x.trim());
+        lines = lines.filter(line => line !== '');     // убираем пустые строки
+        // если первая/последняя строка в «кавычке» — уберём крайние (мягко)
+        if (lines.length && /^['"]/.test(lines[0])) lines[0] = lines[0].slice(1);
+        if (lines.length && /['"]$/.test(lines[lines.length-1])) lines[lines.length-1] = lines[lines.length-1].slice(0,-1);
+        return lines.join('\n');
+    }
+    function superUltraCompare(a, b) {
+        return normalizeForCompare(a) === normalizeForCompare(b);
+    }
 
-/* мягкая «удалить» */
-.vibe-remove-btn-soft{ display:inline-block; margin-right:12px; padding:2px 8px; background:#f6caca; color:#993333!important; font:12px Verdana,Arial,sans-serif;
-  border-radius:8px; cursor:pointer; user-select:none; opacity:.85; transition:.2s; box-shadow:inset 0 0 0 1px #e6b3b3; }
+    /** =============== ЛОКАЛЬНОЕ ХРАНИЛИЩЕ =============== */
+    function bananzaDebugLog(...args) { console.log('[BananzaMailz]', ...args); }
+    function saveBananzaStore() {
+        const store = { sellers, message, logs, errors, isSending, monkeProgress, cancel, pausedAt, lastUpdate: Date.now() };
+        localStorage.setItem(BANANZA_STORE, JSON.stringify(store));
+    }
+    function loadBananzaStore() {
+        let store = null;
+        try { store = JSON.parse(localStorage.getItem(BANANZA_STORE) || ''); } catch {}
+        if (store && typeof store === 'object' && store.sellers && Array.isArray(store.sellers)) {
+            sellers      = store.sellers || [];
+            message      = store.message || '';
+            logs         = store.logs || [];
+            errors       = store.errors || [];
+            isSending    = !!store.isSending;
+            monkeProgress= store.monkeProgress || 0;
+            cancel       = false;
+            pausedAt     = store.pausedAt || 0;
+            lastUpdate   = store.lastUpdate || 0;
+            if (isSending && pausedAt === 0 && monkeProgress > 0 && monkeProgress < sellers.length) {
+                isSending = false;
+                pausedAt  = monkeProgress;
+            }
+            if (monkeProgress >= sellers.length) {
+                isSending = false;
+                pausedAt  = 0;
+            }
+        }
+    }
+    function stateIsFresh() {
+        return !!sellers.length && (Date.now() - lastUpdate < BANANZA_TTL_MS);
+    }
 
-/* группы дат */
-.vibe-date-group{ border-right:2px solid #7ebde9; border-radius:4px; padding-right:8px; margin:16px 6px; }
-.vibe-date-label{ background:linear-gradient(90deg,#e8ecf3 70%,#e3edff 100%); color:#3d5887; font:700 12px 'Segoe UI',Arial; padding:5px 14px; border-radius:16px; display:inline-block; box-shadow:0 1px 6px #b5d2fa14, inset 0 0 0 1px #cfd9ec; letter-spacing:.5px; user-select:text!important; }
+    /** =============== UI =============== */
+    function createMonkeyBtn() {
+        if (document.getElementById('bananza-monke-btn')) return;
+        monkeBtn = document.createElement('div');
+        monkeBtn.id = 'bananza-monke-btn';
+        monkeBtn.title = 'Открыть/Скрыть Bananza Mailz';
+        monkeBtn.innerHTML = '🐒';
+        monkeBtn.className = 'bananza-fab bananza-fab-show';
+        monkeBtn.onclick = function() { hideMonkeyBtn(() => showBananzaPanel()); };
+        document.body.appendChild(monkeBtn);
+    }
+    function hideMonkeyBtn(cb) {
+        if (!monkeBtn) return;
+        monkeBtn.classList.remove('bananza-fab-show');
+        monkeBtn.classList.add('bananza-fab-hide');
+        setTimeout(() => {
+            monkeBtn.style.display = 'none';
+            monkeBtn.style.opacity = '0';
+            if (cb) cb();
+        }, 270);
+    }
+    function showMonkeyBtn() {
+        if (!monkeBtn) createMonkeyBtn();
+        monkeBtn.style.display = '';
+        monkeBtn.style.opacity = '';
+        setTimeout(() => {
+            monkeBtn.classList.remove('bananza-fab-hide');
+            monkeBtn.classList.add('bananza-fab-show');
+        }, 10);
+    }
+    function showBananzaPanel(forceReload) {
+        if (bananzaPanel && document.body.contains(bananzaPanel)) {
+            renderBananzaPanel();
+            return;
+        }
+        bananzaPanel = document.createElement('div');
+        bananzaPanel.id = 'bananza-mailz-popup';
+        bananzaPanel.className = 'bananza-panel bananza-panel-show';
+        bananzaPanel.innerHTML = `
+            <div class="bananza-head">
+                <span style="font-size: 26px; vertical-align: -3px;">🍌</span>
+                <span class="bananza-title">Bananza Mailz</span>
+                <button id="bananza-mailz-reload" title="Обновить список" class="bananza-action-btn">⟳</button>
+                <button id="bananza-mailz-table" title="Открыть Google Таблицу" class="bananza-action-btn">Таблица</button>
+                <button id="bananza-mailz-close" title="Свернуть окно" class="bananza-mailz-close" style="margin-left:auto;">✖</button>
+            </div>
+            <div class="bananza-info">
+                <b>Продавцов:</b> <span style="color:#f7c926" id="bananza-count">…</span>
+            </div>
+            <div id="bananza-go-msg" class="bananza-msg">…</div>
+            <div class="bananza-actions">
+                <button id="bananza-go-start-btn" class="ds-bananza-glow-btn ds-green">БАНАНЫ ВСЕМ!</button>
+                <button id="bananza-go-cancel-btn" style="margin-left:12px;display:none;" class="ds-bananza-glow-btn ds-grey">⏸ Пауза</button>
+                <button id="bananza-go-export" style="margin-left:auto;" class="ds-bananza-glow-btn ds-grey" title="Экспорт лога в JSON">Экспорт</button>
+            </div>
+            <div id="bananza-go-progress" class="bananza-progress"></div>
+            <div id="bananza-go-log" class="bananza-log"></div>
+        `;
+        document.body.appendChild(bananzaPanel);
 
-/* ПАНЕЛЬ КОММЕНТАРИЯ — ширина 30vw */
-#${COMMENT_ID}{ position:absolute; right:18px; top:54px; width:clamp(280px, 30vw, 520px); pointer-events:auto; z-index:4998; }
-.vibe-comment-card{ border:1.8px solid #7b92a7; background:#f6f7fa; border-radius:12px; padding:10px 12px; box-shadow:0 2px 10px rgba(100,120,160,.12); height:77%; display:flex; flex-direction:column; }
+        setTimeout(()=>{ enableVibeScroll('bananza-go-msg'); enableVibeScroll('bananza-go-log'); },80);
+        positionBananzaPanel();
+        window.addEventListener('resize', positionBananzaPanel);
 
-/* grid-шапка: [статус | холд | save] / [рейтинг | онлайн | save] */
-.vibe-comment-head{
-  display:grid;
-  grid-template-columns: 1fr 1fr auto;
-  grid-template-rows: auto auto;
-  column-gap:10px; row-gap:2px;
-  align-items:center;
-  margin:2px 0 6px 2px;
-  font:600 12px 'Segoe UI',Arial;
-  color:#2a3140;
-}
-.vibe-head-status{ grid-area: 1 / 1 / 2 / 2; font-weight:700; text-align:left; font-size:13px; }
-.vibe-head-hold{   grid-area: 1 / 2 / 2 / 3; font-weight:700; text-align:center; font-size:13px; }
-.vibe-head-save{   grid-area: 1 / 3 / 3 / 4; justify-self:end; height:28px; padding:0 12px; background:#eaeef2; border:1.4px solid #7b92a7; border-radius:8px; cursor:pointer; }
-.vibe-head-rating{ grid-area: 2 / 1 / 3 / 2; text-align:left; color:#2a3140; font-size:13px; }
-.vibe-head-online{ grid-area: 2 / 2 / 3 / 3; text-align:center; color:#55627a; font-size:13px; }
+        document.getElementById('bananza-mailz-close').onclick = function() { hideBananzaPanel(); };
+        document.getElementById('bananza-mailz-reload').onclick = function() { loadBananzaData(true); };
+        document.getElementById('bananza-mailz-table').onclick = function() { window.open(SHEET_URL, '_blank'); };
+        document.getElementById('bananza-go-export').onclick = exportLog;
+        document.getElementById('bananza-go-start-btn').onclick = ()=>{
+            if (!isSending) {
+                window._bananzaNeedConfirm = true;
+                renderBananzaPanel();
+            }
+        };
+        document.getElementById('bananza-go-cancel-btn').onclick = ()=>{ cancel = true; };
+        renderBananzaPanel();
+        localStorage.setItem(BANANZA_STATE, '1');
+        if (forceReload || !stateIsFresh()) loadBananzaData();
+    }
+    function hideBananzaPanel() {
+        if (bananzaPanel && document.body.contains(bananzaPanel)) {
+            bananzaPanel.classList.remove('bananza-panel-show');
+            bananzaPanel.classList.add('bananza-panel-hide');
+            setTimeout(() => {
+                if (bananzaPanel.parentNode) bananzaPanel.parentNode.removeChild(bananzaPanel);
+                bananzaPanel = null;
+                showMonkeyBtn();
+            }, 320);
+        } else {
+            showMonkeyBtn();
+        }
+        localStorage.setItem(BANANZA_STATE, '0');
+        window.removeEventListener('resize', positionBananzaPanel);
+    }
+    function positionBananzaPanel() {
+        if (!bananzaPanel) return;
+        bananzaPanel.style.position = 'fixed';
+        bananzaPanel.style.right = '134px';
+        bananzaPanel.style.bottom = '15px';
+        bananzaPanel.style.zIndex = '1000999';
+    }
+    function renderBananzaPanel() {
+        const c = document.getElementById('bananza-count');
+        if (c) c.textContent = sellers.length;
+        const msgEl = document.getElementById('bananza-go-msg');
+        if (msgEl) msgEl.textContent = message || 'Сообщение не указано!';
 
-.vibe-comment-text{ flex:1 1 auto; min-height:60px; resize:vertical; border:1.6px solid #cbd7e6; border-radius:9px; padding:8px 10px; background:#fff; font:13px/1.25 'Segoe UI',Arial; color:#1e2329; box-sizing:border-box; overflow:auto; }
-.vibe-comment-actions{ margin-top:6px; display:flex; gap:8px; align-items:center; }
-.vibe-comment-note{ font:12px 'Segoe UI',Arial; color:#637089; }
+        const startBtn  = document.getElementById('bananza-go-start-btn');
+        const cancelBtn = document.getElementById('bananza-go-cancel-btn');
+        let confirmDiv  = document.getElementById('bananza-go-confirm-wrap');
+        if (confirmDiv) confirmDiv.remove();
 
-@media (max-width:1200px){ #${COMMENT_ID}{ display:none; } }
+        if (window._bananzaNeedConfirm) {
+            confirmDiv = document.createElement('div');
+            confirmDiv.id = 'bananza-go-confirm-wrap';
+            confirmDiv.style.display = 'flex';
+            confirmDiv.style.gap = '12px';
+            confirmDiv.style.marginBottom = '7px';
+            const confirmBtn = document.createElement('button');
+            confirmBtn.className = 'ds-bananza-glow-btn ds-yellow';
+            confirmBtn.textContent = 'Подтвердить';
+            confirmBtn.onclick = function() {
+                window._bananzaNeedConfirm = false;
+                renderBananzaPanel();
+                startBananzaSend(pausedAt > 0 ? pausedAt : 0);
+            };
+            const reloadBtn = document.createElement('button');
+            reloadBtn.className = 'ds-bananza-glow-btn ds-grey';
+            reloadBtn.textContent = 'Обновить данные';
+            reloadBtn.onclick = function() {
+                window._bananzaNeedConfirm = false;
+                renderBananzaPanel();
+                loadBananzaData(true);
+            };
+            confirmDiv.appendChild(confirmBtn);
+            confirmDiv.appendChild(reloadBtn);
+            const actions = document.querySelector('.bananza-actions');
+            if (actions) actions.parentNode.insertBefore(confirmDiv, actions.nextSibling);
 
-/* скрыть оригинальную ссылку [удалить] */
-a.target[href*="del="]{ display:none!important; }
+            startBtn.style.display = 'none';
+            cancelBtn.style.display = 'none';
+        } else {
+            startBtn.style.display = '';
+            if (pausedAt > 0 && !isSending) {
+                startBtn.disabled = false;
+                startBtn.textContent = 'Продолжить рассылку';
+            } else if (isSending) {
+                startBtn.disabled = true;
+                startBtn.textContent = 'Продолжить рассылку';
+            } else {
+                startBtn.disabled = !sellers.length;
+                startBtn.textContent = 'БАНАНЫ ВСЕМ!';
+            }
+            cancelBtn.style.display = isSending ? '' : 'none';
+        }
 
-/* ЛАЙТБООКС */
-.vibe-lightbox-overlay{ position:fixed; inset:0; z-index:9999; display:flex; align-items:center; justify-content:center; background:rgba(32,38,55,.95); cursor:zoom-out; animation:fadein .13s; overflow:hidden; user-select:none; }
-@keyframes fadein{from{opacity:0}to{opacity:1}}
-.vibe-lightbox-img{ max-width:94vw; max-height:92vh; border-radius:15px; border:2px solid #c2d1e1; background:#f9fafb; box-shadow:0 6px 36px #00000033; display:block; margin:auto; cursor:pointer; will-change:transform; transition:box-shadow .18s; animation:popin .16s cubic-bezier(.42,0,.6,1.08); user-select:none; }
-@keyframes popin{from{transform:scale(.95)}to{transform:scale(1)}}
-`;
-  if(!document.getElementById('vibe-merged-css')){
-    const st=document.createElement('style'); st.id='vibe-merged-css'; st.textContent=css; document.head.appendChild(st);
-  }
+        let prog = '';
+        if (isSending || pausedAt > 0) {
+            const done = Math.max(pausedAt, monkeProgress, 0);
+            prog = `Рассылка: ${done}/${sellers.length}`;
+            if (errors.length) prog += ` <span style="color:#ff8585;">Ошибок: ${errors.length}</span>`;
+            if (pausedAt > 0 && !isSending) prog += ` <span style="color:#ffe37e;font-size:13px;">[Пауза]</span>`;
+        }
+        const p = document.getElementById('bananza-go-progress');
+        if (p) p.innerHTML = prog;
+        const l = document.getElementById('bananza-go-log');
+        if (l) l.innerHTML = logs.map(e=>e).join('') || `<span style="color:#777">Лог пуст</span>`;
 
-  // ---------- Утилиты ----------
-  const selInside = (el)=>{
-    const sel = window.getSelection?.(); if(!sel || sel.rangeCount===0) return false;
-    const node = sel.getRangeAt(0).commonAncestorContainer;
-    const n = node.nodeType===1 ? node : node.parentNode;
-    return el && el.contains && n && el.contains(n);
-  };
+        saveBananzaStore();
+    }
 
-  function getSellerIdFromUrl(){ const m=location.search.match(/[?&]id_s=(\d+)/); return m?m[1]:null; }
+    /** =============== ЛОГИ =============== */
+    function logBananza(msg, isError = false) {
+        logs.push(`<div style="color:${isError ? '#f98b8b' : '#e1f8a7'};">${msg}</div>`);
+        renderBananzaPanel();
+        const logDiv = document.getElementById('bananza-go-log');
+        if (logDiv) logDiv.scrollTop = logDiv.scrollHeight;
+    }
+    function logDetails(title, pre) {
+        const safe = escapeHtml(pre);
+        logs.push(
+            `<details style="margin:4px 0;"><summary style="cursor:pointer;color:#9fe7ff;">${escapeHtml(title)}</summary><pre style="white-space:pre-wrap;color:#ddd;">${safe}</pre></details>`
+        );
+        renderBananzaPanel();
+        const logDiv = document.getElementById('bananza-go-log');
+        if (logDiv) logDiv.scrollTop = logDiv.scrollHeight;
+    }
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+    }
+    function exportLog() {
+        const data = {
+            when: new Date().toISOString(),
+            sellersCount: sellers.length,
+            progress: monkeProgress,
+            pausedAt,
+            errors,
+            logsRawHtml: logs.join('')
+        };
+        const blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = `bananza-mailz-log-${Date.now()}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+    }
 
-  // блокировка/возврат прокрутки для модалки
-  function lockPageScroll(){
-    const html=document.documentElement, body=document.body;
-    if(body.dataset.vibeScrollLocked==='1') return;
-    body.dataset.vibePrevOverflowBody = body.style.overflow || '';
-    body.dataset.vibePrevOverflowHtml = html.style.overflow || '';
-    body.dataset.vibeScrollLocked='1';
-    body.style.overflow='hidden'; html.style.overflow='hidden';
-  }
-  function unlockPageScroll(){
-    const html=document.documentElement, body=document.body;
-    body.style.overflow = body.dataset.vibePrevOverflowBody || '';
-    html.style.overflow = body.dataset.vibePrevOverflowHtml || '';
-    delete body.dataset.vibePrevOverflowBody; delete body.dataset.vibePrevOverflowHtml; delete body.dataset.vibeScrollLocked;
-  }
+    /** =============== ЗАГРУЗКА ДАННЫХ =============== */
+    function loadBananzaData(forceReload) {
+        if (!bananzaPanel) return;
+        document.getElementById('bananza-count').textContent = '…';
+        document.getElementById('bananza-go-msg').textContent = 'Загрузка данных...';
+        fetch(APPS_SCRIPT_API_URL + '?action=get_data')
+            .then(r=>r.json())
+            .then(data=>{
+                sellers       = Array.isArray(data.sellers) ? data.sellers : [];
+                message       = (data.message || '').trim();
+                logs          = [];
+                errors        = [];
+                monkeProgress = 0;
+                cancel        = false;
+                pausedAt      = 0;
+                isSending     = false;
+                lastUpdate    = Date.now();
+                renderBananzaPanel();
+                saveBananzaStore();
+            })
+            .catch(e=>{
+                document.getElementById('bananza-go-msg').textContent = 'Ошибка загрузки данных!';
+                logBananza(String(e), true);
+            });
+    }
 
-  // ---------- Данные продавца ----------
-  function fetchSellerInfo(sellerId){
-    if(!sellerId) return Promise.reject('seller_id пуст');
-    if(ST.infoCache[sellerId]) return Promise.resolve(ST.infoCache[sellerId]);
-    return new Promise((resolve,reject)=>{
-      GM_xmlhttpRequest({
-        method:'GET', url:`https://my.digiseller.ru/asp/seller_info.asp?id_s=${sellerId}`,
-        onload:r=>{
-          if(r.status!==200) return reject('network');
-          try{
-            const doc=new DOMParser().parseFromString(r.responseText,'text/html');
-            const rows=doc.querySelectorAll('tr');
-            const byLabel=re=>{
-              for(const row of rows){
-                const th=row.querySelector('td.namerow');
-                if(th && re.test(th.textContent)){
-                  const td=row.querySelector('td.inforow');
-                  if(td) return (td.textContent||'').replace(/\u00A0/g,' ').replace(/\s+/g,' ').trim();
+    /** =============== ОСНОВНОЙ ЦИКЛ =============== */
+    async function startBananzaSend(startIdx = 0) {
+        isSending = true; cancel = false; renderBananzaPanel();
+        logBananza(`🍌 Запуск рассылки с позиции ${startIdx+1} из ${sellers.length}...`);
+
+        // Ревизия нескольких предыдущих — чтобы закрыть хвост перед продолжением
+        const checkFrom = Math.max(0, startIdx - 2);
+        for (let j = checkFrom; j < startIdx; ++j) {
+            const id = String(sellers[j]?.id || sellers[j]);
+            const uniqueMsg = (sellers[j]?.message || '').trim();
+            const globalMsg = (message || '').trim();
+            const toSend    = uniqueMsg ? uniqueMsg : globalMsg;
+
+            if (!toSend) { logBananza(`[${j+1}] ID ${id}: нет сообщения, пропущено (ревизия)`, true); continue; }
+
+            logBananza(`[${j+1}] ID ${id}: ревизия последнего сообщения...`);
+            try {
+                const lastMsg = await getLastSellerMsg(id);
+                if (DEBUG_VERBOSE) {
+                    logDetails(`Ревизия: исходящее (сырой) для ID ${id}`, toSend);
+                    logDetails(`Ревизия: исходящее (norm) для ID ${id}`, normalizeForCompare(toSend));
+                    logDetails(`Ревизия: последнее с сайта (сырой) для ID ${id}`, lastMsg);
+                    logDetails(`Ревизия: последнее с сайта (norm) для ID ${id}`, normalizeForCompare(lastMsg));
                 }
-              }
-              return '';
-            };
-            let nickname='';
-            for(const row of rows){
-              const th=row.querySelector('td.namerow');
-              if(th && /псевдоним/i.test(th.textContent)){
-                const td=row.querySelector('td.inforow');
-                nickname=(td?.childNodes[0]?.textContent || td?.textContent || '').trim().replace(/\u00A0/g,' ');
-                break;
-              }
+                if (superUltraCompare(lastMsg, toSend)) {
+                    logBananza(`[${j+1}] ID ${id}: уже отправлено (ревизия)`, false);
+                    await sendLogToSheet(id, 'Уже отправлено (ревизия)', `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${id}`);
+                } else {
+                    logBananza(`[${j+1}] ID ${id}: отправляю повторно (ревизия)...`);
+                    await sendMsgToSeller(id, toSend, j+1);
+                }
+            } catch(e) {
+                if (String(e?.message || e).includes('Авторизац')) {
+                    logBananza(`[${j+1}] ID ${id}: ошибка авторизации — остановка. ${e.message||e}`, true);
+                    errors.push(id);
+                    await sendLogToSheet(id, 'Ошибка авторизации (ревизия): ' + (e.message||e));
+                    isSending = false; pausedAt = j; renderBananzaPanel(); saveBananzaStore();
+                    return;
+                }
+                // Теперь: отсутствие сообщений/парс-ошибки — не блокируют, отправляем
+                logBananza(`[${j+1}] ID ${id}: ревизию не удалось получить (${e.message||e}). Продолжаю и отправляю...`, true);
+                try {
+                    await sendMsgToSeller(id, toSend, j+1);
+                } catch (e2) {
+                    logBananza(`[${j+1}] ID ${id}: ошибка при отправке после неудачной ревизии: ${e2.message||e2}`, true);
+                    errors.push(id);
+                    await sendLogToSheet(id, 'Ошибка отправки (ревизия fallback): ' + (e2.message||e2));
+                }
             }
-            const checked = doc.querySelector('input[name="Condition"]:checked');
-            let status='';
-            if(checked){
-              const lab = doc.querySelector(`label[for="${checked.id}"]`);
-              status = (lab?.textContent || '').replace(/\u00A0/g,' ').replace(/\s+/g,' ').trim();
+            monkeProgress = j+1; pausedAt = 0; renderBananzaPanel(); saveBananzaStore();
+            if (j < startIdx-1) await sleep(BANANZA_SEND_DELAY_MS);
+        }
+
+        // Основная отправка
+        for (let i = startIdx; i < sellers.length; ++i) {
+            if (cancel) {
+                pausedAt = i; isSending = false;
+                logBananza(`<b>Рассылка поставлена на паузу. Можно продолжить в любой момент.</b>`, true);
+                renderBananzaPanel(); saveBananzaStore(); return;
             }
-            const holdEl = doc.querySelector('#Day_Lock');
-            let holdDays=null;
-            if(holdEl){
-              let v = holdEl.getAttribute('value');
-              if(v==null) v = holdEl.value;
-              v = (v||'').trim();
-              holdDays = v==='' ? null : v;
+            const id = String(sellers[i]?.id || sellers[i]);
+            const uniqueMsg = (sellers[i]?.message || '').trim();
+            const globalMsg = (message || '').trim();
+            const toSend    = uniqueMsg ? uniqueMsg : globalMsg;
+            if (!toSend) { logBananza(`[${i+1}] ID ${id}: нет сообщения, пропущено`, true); continue; }
+
+            logBananza(`[${i+1}] ID ${id}: проверяю последнее сообщение...`);
+            try {
+                const lastMsg = await getLastSellerMsg(id);
+                if (DEBUG_VERBOSE) {
+                    logDetails(`Проверка перед отправкой: исходящее (сырой) для ID ${id}`, toSend);
+                    logDetails(`Проверка перед отправкой: исходящее (norm) для ID ${id}`, normalizeForCompare(toSend));
+                    logDetails(`Проверка перед отправкой: последнее с сайта (сырой) для ID ${id}`, lastMsg);
+                    logDetails(`Проверка перед отправкой: последнее с сайта (norm) для ID ${id}`, normalizeForCompare(lastMsg));
+                }
+                if (superUltraCompare(lastMsg, toSend)) {
+                    logBananza(`[${i+1}] ID ${id}: уже отправлено, пропускаем!`);
+                    await sendLogToSheet(id, 'Уже отправлено', `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${id}`);
+                } else {
+                    logBananza(`[${i+1}] ID ${id}: отправляю...`);
+                    await sendMsgToSeller(id, toSend, i+1);
+                }
+            } catch(e) {
+                if (String(e?.message || e).includes('Авторизац')) {
+                    logBananza(`[${i+1}] ID ${id}: ошибка авторизации — остановка. ${e.message||e}`, true);
+                    errors.push(id);
+                    await sendLogToSheet(id, 'Ошибка авторизации: ' + (e.message||e));
+                    isSending = false; pausedAt = i; renderBananzaPanel(); saveBananzaStore();
+                    return;
+                }
+                // Теперь это не блокирует: шлём даже если не смогли получить историю
+                logBananza(`[${i+1}] ID ${id}: не удалось получить последнее сообщение (${e.message||e}). Продолжаю и отправляю...`, true);
+                try {
+                    await sendMsgToSeller(id, toSend, i+1);
+                } catch (e2) {
+                    logBananza(`[${i+1}] ID ${id}: ошибка при отправке (fallback после неудачной проверки): ${e2.message||e2}`, true);
+                    errors.push(id);
+                    await sendLogToSheet(id, 'Ошибка отправки (fallback): ' + (e2.message||e2));
+                }
             }
-            const rating = byLabel(/рейтинг/i) || '';
-            const online = byLabel(/онлайн/i) || '';
-            const info={
-              nickname,
-              comment:(doc.querySelector('textarea[name="txt_Comments"]')?.value||'').trim(),
-              lastVisit:byLabel(/дата последнего посещения/i),
-              status, holdDays, rating, online
-            };
-            ST.infoCache[sellerId]=info; resolve(info);
-          }catch{ reject('parse'); }
-        },
-        onerror:()=>reject('network')
-      });
-    });
-  }
+            monkeProgress = i+1; pausedAt = 0; renderBananzaPanel(); saveBananzaStore();
+            if (i < sellers.length-1) await sleep(BANANZA_SEND_DELAY_MS);
+        }
 
-  function postSellerComment(sellerId,text){
-    return new Promise((resolve,reject)=>{
-      GM_xmlhttpRequest({
-        method:'POST',
-        url:`https://my.digiseller.ru/asp/seller_info.asp?id_s=${sellerId}`,
-        headers:{'Content-Type':'application/x-www-form-urlencoded'},
-        data:`id_action=save&txt_Comments=${encodeURIComponent(text)}`,
-        onload:r=>r.status===200?resolve():reject('server'),
-        onerror:()=>reject('network')
-      });
-    });
-  }
-
-  // ---------- Верхняя строка и кнопки ----------
-  function findActionLinks(){
-    const all=[...document.querySelectorAll('a')];
-    const newMsg=all.find(a=>/новое сообщение/i.test(a.textContent));
-    const markRead=all.find(a=>/отметить прочитанным/i.test(a.textContent));
-    if(!newMsg||!markRead) return null;
-    const host=newMsg.closest('p')||markRead.closest('p')||newMsg.parentElement; if(!host) return null;
-    host.style.position='relative';
-    [newMsg,markRead].forEach(a=>{
-      if(!a.dataset.vibeHidden){
-        a.style.opacity='0'; a.style.pointerEvents='none';
-        if(a.parentElement && a.parentElement.tagName==='FONT'){ a.parentElement.style.opacity='0'; a.parentElement.style.pointerEvents='none'; }
-        a.dataset.vibeHidden='1';
-      }
-    });
-    return {host,newMsg,markRead};
-  }
-
-  function removeOldOnlinePill(){ const p=document.getElementById(ONLINE_ID); if(p) p.remove(); }
-
-  async function drawFakeButtonsRow(){
-    const found=findActionLinks(); if(!found) return;
-    const {host,newMsg,markRead}=found;
-
-    document.querySelectorAll('.vibe-btn-fake-row').forEach(el=>{ if(el.id!==ROW_ID) el.remove(); });
-
-    let row=document.getElementById(ROW_ID);
-    if(!row){
-      row=document.createElement('div'); row.id=ROW_ID; row.className='vibe-btn-fake-row';
-      row.style.position='absolute'; row.style.top='0'; row.style.left='0'; row.style.pointerEvents='none';
-      const b1=document.createElement('button'); b1.className='vibe-btn-fake'; b1.dataset.role='new'; b1.style.pointerEvents='auto';
-      const b2=document.createElement('button'); b2.className='vibe-btn-fake vibe-btn-fake-black'; b2.dataset.role='read'; b2.style.pointerEvents='auto';
-      row.appendChild(b1); row.appendChild(b2); host.appendChild(row);
+        isSending = false; pausedAt = 0; renderBananzaPanel();
+        const finalMsg = (errors.length === 0)
+            ? 'Рассылка завершена, все обезьяны получили бананы 🍌🐒'
+            : `Рассылка завершена, <b>не все обезьяны получили бананы!</b> (${errors.length} ошибок)`;
+        logBananza(`<div style="font-size:16px;color:${errors.length?'#ff8585':'#b6ff79'};margin-top:7px;">${finalMsg}</div>`);
+        saveBananzaStore();
     }
-    if(row.parentNode!==host) host.appendChild(row);
 
-    const btnNew=row.querySelector('button[data-role="new"]');
-    const btnRead=row.querySelector('button[data-role="read"]');
-    if(btnNew){ btnNew.textContent=(newMsg.textContent||'новое сообщение').trim(); btnNew.onclick=e=>{ e.preventDefault(); newMsg.click(); }; }
-    if(btnRead){ btnRead.textContent=(markRead.textContent||'отметить прочитанным').trim(); btnRead.onclick=e=>{ e.preventDefault(); markRead.click(); }; }
+    /** =============== ОТПРАВКА И ПРОВЕРКА =============== */
+    function sendMsgToSeller(id, msg, idx) {
+        return new Promise((resolve, reject) => {
+            const msgCRLF = msg.replace(/\r?\n/g, '\r\n');
+            if (DEBUG_VERBOSE) {
+                logDetails(`POST → new_message.asp (ID ${id}) — исходящее (сырой)`, msg);
+                logDetails(`POST → new_message.asp (ID ${id}) — исходящее (norm)`, normalizeForCompare(msg));
+            }
+            GM_xmlhttpRequest({
+                method: "POST",
+                url: `https://my.digiseller.ru/asp/new_message.asp?id_s=${encodeURIComponent(id)}`,
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                data: `txt_Message=${encodeURIComponent(msgCRLF)}`,
+                onload: function(response) {
+                    const finalUrl = response.finalUrl || 'нет';
+                    const status   = response.status;
+                    const headers  = response.responseHeaders || '';
+                    const htmlPart = (response.responseText || '').slice(0, HTML_SNIPPET_LIMIT);
 
-    // --- Кнопка-ник: клик — ник, Ctrl+клик — seller_id ---
-    const sellerId=getSellerIdFromUrl();
-    if(sellerId && !row.querySelector('.vibe-btn-nick')){
-      const tmp=document.createElement('button'); tmp.className='vibe-btn-nick'; tmp.textContent='Загрузка...'; tmp.disabled=true; row.appendChild(tmp);
-      fetchSellerInfo(sellerId).then(info=>{
-        const btn=document.createElement('button'); btn.className='vibe-btn-nick';
-        btn.textContent=info.nickname||'без ника';
-        btn.title='Клик: скопировать ник\\nCtrl+клик: скопировать seller_id';
-        btn.addEventListener('click',e=>{
-          const val=e.ctrlKey?sellerId:(info.nickname||'');
-          navigator.clipboard.writeText(val).then(()=>{
-            const o=btn.textContent; btn.textContent='Скопировано!'; btn.classList.add('copied');
-            setTimeout(()=>{ btn.textContent=o; btn.classList.remove('copied'); },800);
-          });
+                    logBananza(`[${idx}] Ответ сервера: статус=${status}, URL=${finalUrl}`);
+                    if (DEBUG_VERBOSE) {
+                        logDetails(`HTTP headers (ID ${id})`, headers);
+                        logDetails(`HTML snippet (ID ${id})`, htmlPart);
+                    }
+
+                    if (status === 200 && !(finalUrl && finalUrl.includes('login.asp'))) {
+                        // Подтверждение: забираем последнее сообщение и сравниваем (с повторной попыткой)
+                        const verify = () => getLastSellerMsg(id).then(lastMsg => {
+                            if (DEBUG_VERBOSE) {
+                                logDetails(`Проверка после отправки: последнее с сайта (сырой) для ID ${id}`, lastMsg);
+                                logDetails(`Проверка после отправки: последнее с сайта (norm) для ID ${id}`, normalizeForCompare(lastMsg));
+                                logDetails(`DIFF (ID ${id})`, prettyDiff(msg, lastMsg));
+                            }
+                            if (superUltraCompare(lastMsg, msg)) {
+                                logBananza(`[${idx}] ID ${id}: OK, сообщение подтверждено!`);
+                                sendLogToSheet(id, 'OK', `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${id}`);
+                                resolve();
+                            } else {
+                                logBananza(`[${idx}] ID ${id}: последнее сообщение НЕ совпало! (повторная проверка через ${VERIFY_RETRY_DELAY}мс)`, true);
+                                setTimeout(() => {
+                                    getLastSellerMsg(id).then(lastMsg2 => {
+                                        if (DEBUG_VERBOSE) {
+                                            logDetails(`Повторная проверка: последнее (сырой) ID ${id}`, lastMsg2);
+                                            logDetails(`Повторная проверка: последнее (norm) ID ${id}`, normalizeForCompare(lastMsg2));
+                                            logDetails(`Повторный DIFF (ID ${id})`, prettyDiff(msg, lastMsg2));
+                                        }
+                                        if (superUltraCompare(lastMsg2, msg)) {
+                                            logBananza(`[${idx}] ID ${id}: OK после повторной проверки!`);
+                                            sendLogToSheet(id, 'OK (2nd check)', `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${id}`);
+                                            resolve();
+                                        } else {
+                                            logBananza(`[${idx}] ID ${id}: НЕ совпало даже повторно`, true);
+                                            sendLogToSheet(id, 'Ошибка: Последнее сообщение не совпало', `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${id}`);
+                                            reject(new Error('Последнее сообщение не совпало'));
+                                        }
+                                    }).catch(e2=>{
+                                        logBananza(`[${idx}] ID ${id}: ошибка повторной проверки: ${e2.message||e2}`, true);
+                                        sendLogToSheet(id, 'Ошибка повторной проверки: ' + (e2.message||e2), `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${id}`);
+                                        reject(new Error('Ошибка при повторной проверке'));
+                                    });
+                                }, VERIFY_RETRY_DELAY);
+                            }
+                        });
+
+                        verify().catch(reject);
+                    } else if (finalUrl && finalUrl.includes('login.asp')) {
+                        reject(new Error('Ошибка авторизации! Перезайдите в аккаунт Digiseller!'));
+                    } else {
+                        reject(new Error('Ошибка отправки. Код: ' + status));
+                    }
+                },
+                onerror: function() { reject(new Error('Ошибка сети или CORS')); }
+            });
         });
-        row.replaceChild(btn,tmp);
-      }).catch(()=>{ tmp.textContent='Ошибка ника'; });
     }
 
-    ensureSearch(row);
-    removeOldOnlinePill();
-    ensureFixedCommentPanel();
-    updateCommentPanelBounds();
-  }
+    function getLastSellerMsg(id) {
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: "GET",
+                url: `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${encodeURIComponent(id)}`,
+                onload: function(response) {
+                    const finalUrl = response.finalUrl || '';
+                    const status   = response.status;
 
-  // ---------- Поиск ----------
-  function ensureSearch(row){
-    if(!row.querySelector('#vibe-searchbox-wrap')){
-      const box=document.createElement('div'); box.id='vibe-searchbox-wrap';
-      box.innerHTML=`<input id="vibe-search-input" type="text" tabindex="1" autocomplete="off" placeholder="🔍 Поиск по сообщениям..."><div id="vibe-search-results"></div>`;
-      row.appendChild(box);
-    }
-    const input=row.querySelector('#vibe-search-input');
-    const results=row.querySelector('#vibe-search-results');
-    if(input && !input.dataset.vibeInit){ setupSearchUI(input,results); input.dataset.vibeInit='1'; }
-  }
+                    if (DEBUG_VERBOSE) {
+                        logBananza(`[GET lastMsg] ID ${id}: статус=${status}, URL=${finalUrl || 'нет'}`);
+                        if (response.responseHeaders) logDetails(`GET headers (ID ${id})`, response.responseHeaders);
+                    }
 
-  function getLastPagesLinks(){
-    const links=[...document.querySelectorAll('a[href*="seller_messages.asp"][class*="target"]')];
-    const unique=new Set([location.href]); links.forEach(l=> unique.add(new URL(l.href, location.origin).href));
-    return [...unique].map(url=>({url, id:parseInt(url.match(/id=(\d+)/)?.[1]||'0',30)})).sort((a,b)=>a.id-b.id).slice(0,30).map(o=>o.url);
-  }
-  function parseMessagesFromHTML(html,pageUrl){
-    const doc=new DOMParser().parseFromString(html,'text/html'); const rows=doc.querySelectorAll('td.td_title'); const out=[];
-    rows.forEach(td=>{
-      const tr=td.parentElement; const datetime=(td.textContent||'').trim(); let msgTd=tr.children[2]; let msg='';
-      if(msgTd){ msg=msgTd.innerText.replace(/\s+/g,' ').trim();
-        const only=(msgTd.querySelectorAll('a').length>0 && msg.replace(/https?:\/\/\S+/g,'').trim().length===0) ||
-                    (msgTd.querySelectorAll('img').length>0 && msg.replace(/[\u200B-\u200D\uFEFF]/g,'').trim().length===0);
-        if(only || msg.length<2) msg=''; }
-      if(!msg){ for(let i=1;i<tr.children.length;i++){ if(i===2) continue; const t=tr.children[i].innerText.replace(/\s+/g,' ').trim(); if(t.length>msg.length) msg=t; } }
-      msg=msg.replace(/(?:\s*\n)?возможно\s+запрос\s+по\s+заказам[:：]?\s*\[?\d*\]?\s*/gi,'').replace(/^\s*\[\d+\]\s*$/gm,'').replace(/(\n\s*){2,}/g,'\n').trim();
-      const m=datetime.match(/^(\d{2})\.(\d{2})\.(\d{4}) (\d{1,2}):(\d{2}):(\d{2})$/); let ts=0;
-      if(m){ const pad=s=>s.padStart(2,'0'); const iso=`${m[3]}-${m[2]}-${m[1]}T${pad(m[4])}:${pad(m[5])}:${pad(m[6])}`; ts=new Date(iso).getTime()||0; }
-      if(msg && datetime) out.push({ datetime, text:msg, pageUrl, ts });
-    });
-    return out;
-  }
-  async function fetchMessagesFromPages(urls){
-    let cache=[]; await Promise.all(urls.map(url=> new Promise(res=>{
-      GM_xmlhttpRequest({ method:'GET', url, onload:r=>{ if(r.status===200) cache=cache.concat(parseMessagesFromHTML(r.responseText,url)); res(); }, onerror:res });
-    })));
-    return cache;
-  }
-
-  function setupSearchUI(input,results){
-    // инерция прокрутки результатов
-    let raf=null, vel=0; const F=0.88, STEP=0.25, MIN=0.5;
-    function step(){ const max=results.scrollHeight-results.clientHeight; if(max<=0){ vel=0; raf=null; return; }
-      results.scrollTop += vel*STEP; if((results.scrollTop<=0&&vel<0)||(results.scrollTop>=max&&vel>0)) vel=0; else vel*=F;
-      if(Math.abs(vel)<MIN){ vel=0; raf=null; return; } raf=requestAnimationFrame(step);
-    }
-    results.addEventListener('wheel', e=>{ e.preventDefault(); const scale=e.deltaMode===1?16:e.deltaMode===2?results.clientHeight:1; vel+=e.deltaY*scale*0.6; if(!raf) raf=requestAnimationFrame(step); }, {passive:false});
-
-    let cache=null, loading=false, last='';
-    input.addEventListener('input', async ()=>{
-      const q=input.value.trim().toLowerCase(); last=q;
-      if(!q){ results.style.display='none'; results.innerHTML=''; return; }
-      if(!cache && !loading){
-        loading=true; input.style.background='#bff3d3'; results.style.display='block';
-        results.innerHTML='<div style="padding:12px;font-size:14px;color:#999;">Загрузка последних 30 страниц...</div>';
-        cache=await fetchMessagesFromPages(getLastPagesLinks());
-        loading=false; input.style.background='';
-      }
-      if(cache){
-        let found=cache.filter(m=> m.text.toLowerCase().includes(q) || m.datetime.toLowerCase().includes(q))
-                       .sort((a,b)=>b.ts-a.ts).slice(0,30);
-        if(last!==q) return;
-        const hi=(t,q)=> t.replace(new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'gi'), m=>`<mark style="background:#ffeab5;">${m}</mark>`);
-        results.innerHTML = found.length
-          ? found.map(m=>`
-              <div class="vibe-search-res" style="padding:9px 12px;border-bottom:1px solid #f1f1f1;cursor:pointer;"
-                   data-page="${encodeURIComponent(m.pageUrl)}" data-datetime="${encodeURIComponent(m.datetime)}"
-                   title="Двойной клик — открыть страницу и прокрутить к сообщению">
-                <div style="font-size:13px;color:#6a7a8e;font-weight:600">${m.datetime}</div>
-                <div style="font-size:13px;color:#23273a">${hi(m.text,q)}</div>
-              </div>`).join('')
-          : '<div style="padding:12px;font-size:14px;color:#999;">Ничего не найдено</div>';
-        results.style.display='block';
-      }
-    });
-
-    // переход по dblclick — кодируем дату ОДИН раз
-    results.addEventListener('dblclick', e=>{
-      const r=e.target.closest('.vibe-search-res'); if(!r) return;
-      const pageUrl=decodeURIComponent(r.getAttribute('data-page'));
-      const dtRaw = decodeURIComponent(r.getAttribute('data-datetime'));
-      location.href = pageUrl.split('#')[0] + '#vibe_msg=' + encodeURIComponent(dtRaw);
-      results.style.display='none';
-    });
-
-    document.addEventListener('click', e=>{ if(!results.contains(e.target) && e.target!==input) results.style.display='none'; });
-    input.addEventListener('keydown', e=> e.stopPropagation());
-  }
-
-  // ---------- Панель комментария ----------
-  function ensureFixedCommentPanel(){
-    if(document.getElementById(COMMENT_ID)) return;
-    const panel=document.createElement('div');
-    panel.id=COMMENT_ID;
-    panel.innerHTML=`
-      <div class="vibe-comment-card">
-        <div class="vibe-comment-head">
-          <span id="vibe-title-status" class="vibe-head-status">…</span>
-          <span id="vibe-title-hold"   class="vibe-head-hold">Холд: …</span>
-          <button type="button" class="vibe-head-save" id="vibe-comment-save">сохранить</button>
-          <span id="vibe-sub-rating" class="vibe-head-rating">Рейтинг: …</span>
-          <span id="vibe-sub-online" class="vibe-head-online">Онлайн: …</span>
-        </div>
-        <textarea class="vibe-comment-text" id="vibe-comment-textarea" placeholder="Добавьте заметку..."></textarea>
-        <div class="vibe-comment-actions"><span class="vibe-comment-note" id="vibe-comment-note"></span></div>
-      </div>`;
-    document.body.appendChild(panel);
-
-    const save=panel.querySelector('#vibe-comment-save');
-    const ta=panel.querySelector('#vibe-comment-textarea');
-    const note=panel.querySelector('#vibe-comment-note');
-
-    updateCommentPanelData();
-
-    save.addEventListener('click', async ()=>{
-      const sellerId=getSellerIdFromUrl(); if(!sellerId) return;
-      note.textContent='сохранение...'; save.disabled=true;
-      try{
-        await postSellerComment(sellerId, ta.value||'');
-        if(ST.infoCache[sellerId]) ST.infoCache[sellerId].comment=ta.value||'';
-        note.textContent='сохранено ✓'; setTimeout(()=> note.textContent='',1500);
-      }catch{ note.textContent='ошибка сохранения'; }
-      finally{ save.disabled=false; }
-    });
-  }
-
-  async function updateCommentPanelData(){
-    const panel=document.getElementById(COMMENT_ID); if(!panel) return;
-    const sellerId=getSellerIdFromUrl(); if(!sellerId) return;
-
-    const elStatus=panel.querySelector('#vibe-title-status');
-    const elHold=panel.querySelector('#vibe-title-hold');
-    const elRating=panel.querySelector('#vibe-sub-rating');
-    const elOnline=panel.querySelector('#vibe-sub-online');
-    const ta=panel.querySelector('#vibe-comment-textarea');
-    const note=panel.querySelector('#vibe-comment-note');
-
-    try{
-      const info=await fetchSellerInfo(sellerId);
-      if(ta) ta.value = info.comment || '';
-
-      const status = info.status || '—';
-      const holdDisplay = (info.holdDays==null || String(info.holdDays).trim()==='') ? '7' : String(info.holdDays).trim();
-      const rating = (info.rating||'—').trim();
-      const online = (info.online || info.lastVisit || '—').trim();
-
-      if(elStatus && elStatus.textContent !== status) elStatus.textContent = status;
-      if(elHold && !selInside(elHold)){ const t=`Холд: ${holdDisplay} дн`; if(elHold.textContent!==t) elHold.textContent=t; }
-      if(elRating && !selInside(elRating)){ const t=`Рейтинг: ${rating}`; if(elRating.textContent!==t) elRating.textContent=t; }
-      if(elOnline && !selInside(elOnline)){ const t=`Онлайн: ${online}`; if(elOnline.textContent!==t) elOnline.textContent=t; }
-
-      if(note) note.textContent='';
-    }catch{
-      if(elStatus && elStatus.textContent!=='—') elStatus.textContent='—';
-      if(elHold   && !selInside(elHold)   && elHold.textContent!=='Холд: 7 дн')   elHold.textContent='Холд: 7 дн';
-      if(elRating && !selInside(elRating) && elRating.textContent!=='Рейтинг: —') elRating.textContent='Рейтинг: —';
-      if(elOnline && !selInside(elOnline) && elOnline.textContent!=='Онлайн: —')   elOnline.textContent='Онлайн: —';
-      if(note) note.textContent='не удалось загрузить данные';
-    }
-  }
-
-  // Ограничение высоты панели
-  function updateCommentPanelBounds(){
-    const panel=document.getElementById(COMMENT_ID); if(!panel) return;
-    panel.style.top='54px';
-    const tbl=document.querySelector('table[width="100%"][cellpadding="2"]');
-    let maxH=Math.floor(window.innerHeight*0.35);
-    if(tbl){
-      const tableDocTop = tbl.getBoundingClientRect().top + window.scrollY;
-      const panelDocTop = 54;
-      const space = tableDocTop - panelDocTop - 12;
-      if (space > 60) maxH = Math.floor(space / 2); else maxH = Math.max(140, space - 12);
-    }
-    maxH = Math.max(140, maxH);
-    panel.style.height = maxH + 'px';
-    panel.style.maxHeight = maxH + 'px';
-  }
-
-  // ---------- Сообщения → bubbles ----------
-  function transformAllMessages(){
-    document.querySelectorAll('tr').forEach(tr=>{
-      if(tr.dataset.vibeDone==='1') return;
-      const tds=tr.querySelectorAll('td'); if(tds.length!==3) return;
-      const dateTd=tds[0], iconTd=tds[1], msgTd=tds[2];
-      const img=iconTd.querySelector('img'); if(!img||(!img.src.includes('mail_out')&&!img.src.includes('mail_in'))) return;
-      const dateRaw=(dateTd.textContent||'').replace(/[\n\r]+/g,'').trim(); if(!dateRaw) return;
-
-      let html=msgTd.innerHTML
-        .replace(/<div[^>]+class=["']?vibe-msg-bubble["']?[^>]*>[\s\S]*?<\/div>/gi, m=>m.replace(/<div[^>]+class=["']?vibe-msg-bubble["']?[^>]*>/i,'').replace(/<\/div>$/i,''))
-        .replace(/<span[^>]+class=["']?vibe-msg-meta["']?[^>]*>[\s\S]*?<\/span>/gi,'')
-        .replace(/<font[^>]*color=['"]?b2b2b2['"]?[^>]*>/gi,'').replace(/<\/font>/gi,'')
-        .replace(/<p[^>]*>/gi,'').replace(/<\/p>/gi,'')
-        .replace(/<fieldset[^>]*>/gi,'').replace(/<\/fieldset>/gi,'')
-        .replace(/<legend[^>]*>.*?<\/legend>/gi,'')
-        .replace(/<table[^>]*>/gi,'').replace(/<\/table>/gi,'')
-        .replace(/<tbody[^>]*>/gi,'').replace(/<\/tbody>/gi,'')
-        .replace(/<tr[^>]*>/gi,'').replace(/<\/tr>/gi,'')
-        .replace(/<td[^>]*>/gi,'').replace(/<\/td>/gi,'')
-        .replace(/<div[^>]*class=['"]?main_msg['"]?[^>]*>/gi,'')
-        .replace(/<\/div>/gi,'');
-
-      html=html.replace(/<br\s*\/?>/gi,'\n');
-      html=html.replace(/<a /g,'<a target="_blank" rel="noopener" ');
-      html=html.replace(/<img([^>]+)>/gi,(_,attrs)=>{
-        const w=(attrs.match(/max-width\s*:\s*(\d+)px/i)?.[1]||468)|0;
-        const hitW=Math.round(w*1.3);
-        return `<span class="vibe-img-wrap" style="position:relative;display:inline-block;"><img${attrs}><span class="vibe-img-hitbox" style="width:${hitW}px;height:auto;top:50%;left:50%;transform:translate(-50%,-50%);"></span></span>`;
-      });
-      html=html.replace(/<a ([^>]+)>(https?:\/\/[^<]+)<\/a>/gi,'<a $1 class="link">$2</a>');
-      html=html.replace(/^[\n\r]+|[\n\r]+$/g,'');
-      const lines=html.split('\n');
-      while(lines.length && lines[0].trim()==='') lines.shift();
-      while(lines.length && lines[lines.length-1].trim()==='') lines.pop();
-      html=lines.map(l=>l.trim()===''?'<div style="height:7px"></div>':`<div>${l.trim()}</div>`).join('');
-      html=html.replace(/\[\s*|\s*\]/g,'');
-
-      msgTd.innerHTML=`
-        <div class="vibe-msg-bubble">
-          <div class="vibe-msg-text-meta">
-            <span class="vibe-msg-text">${html}</span>
-            <span class="vibe-msg-meta" data-full-date="${dateRaw}">${dateRaw}</span>
-          </div>
-        </div>`;
-      tr.classList.remove('vibe-msg-out','vibe-msg-in');
-      if(img.src.includes('mail_out')) tr.classList.add('vibe-msg-out');
-      if(img.src.includes('mail_in'))  tr.classList.add('vibe-msg-in');
-      dateTd.remove(); iconTd.remove(); tr.dataset.vibeDone='1';
-    });
-  }
-
-  function groupMessagesByDate(){
-    const tbl=document.querySelector('table[width="100%"][cellpadding="2"]'); if(!tbl) return;
-    if(!window.vibeMsgGroups) window.vibeMsgGroups={};
-    document.querySelectorAll('tr.vibe-msg-out, tr.vibe-msg-in').forEach(tr=>{
-      if(tr.dataset.vibeGrouped==='1') return;
-      const meta=tr.querySelector('.vibe-msg-meta'); if(!meta) return;
-      const full=meta.getAttribute('data-full-date')||meta.textContent.trim();
-      const onlyDate=(full||'').split(' ')[0]; if(!onlyDate) return;
-      let wrap=window.vibeMsgGroups[onlyDate];
-      if(!wrap){
-        wrap=document.createElement('tbody'); wrap.className='vibe-date-group'; wrap.dataset.vibedate=onlyDate;
-        const r=document.createElement('tr'); const td=document.createElement('td'); td.colSpan=3;
-        const label=document.createElement('div'); label.className='vibe-date-label'; label.textContent=onlyDate;
-        td.appendChild(label); r.appendChild(td); wrap.appendChild(r); tbl.appendChild(wrap);
-        window.vibeMsgGroups[onlyDate]=wrap;
-      }
-      wrap.appendChild(tr); tr.dataset.vibeGrouped='1';
-    });
-  }
-
-  // ---------- Лайтбокс (зум, drag) ----------
-  function openLightbox(src){
-    const old=document.getElementById('vibe-lightbox-overlay'); if(old) old.remove();
-    lockPageScroll();
-
-    const o=document.createElement('div'); o.id='vibe-lightbox-overlay'; o.className='vibe-lightbox-overlay';
-    o.innerHTML=`<img class="vibe-lightbox-img" src="${src}" draggable="false">`;
-    const img=o.querySelector('.vibe-lightbox-img');
-
-    let scale=1, minScale=0.18, maxScale=6;
-    let ox=0, oy=0;
-    const apply=()=> img.style.transform=`translate(${ox}px,${oy}px) scale(${scale})`;
-    const center=()=>{ const r=img.getBoundingClientRect(); return {x:r.left+r.width/2, y:r.top+r.height/2}; };
-
-    o.addEventListener('wheel',(e)=>{
-      const r=img.getBoundingClientRect();
-      if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom) return;
-      e.preventDefault();
-      const prev=scale, next=Math.max(minScale, Math.min(maxScale, scale*(e.deltaY<0?1.13:0.89)));
-      if(next>prev){
-        const c=center(); const ix=(e.clientX-c.x-ox)/scale, iy=(e.clientY-c.y-oy)/scale;
-        scale=next; ox-=ix*(scale-prev); oy-=iy*(scale-prev);
-      }else if(next<prev){
-        if(next<=1.001){ scale=1; ox=0; oy=0; }
-        else{ const c=center(); const ix=(c.x-window.innerWidth/2-ox)/scale, iy=(c.y-window.innerHeight/2-oy)/scale; scale=next; ox-=ix*(scale-prev); oy-=iy*(scale-prev); }
-      }
-      apply();
-    },{passive:false});
-
-    let drag=false,sx=0,sy=0,sox=0,soy=0;
-    img.addEventListener('mousedown',(e)=>{ drag=true; sx=e.clientX; sy=e.clientY; sox=ox; soy=oy; img.style.cursor='grabbing'; e.preventDefault(); });
-    window.addEventListener('mousemove',(e)=>{ if(!drag) return; ox=sox+(e.clientX-sx); oy=soy+(e.clientY-sy); apply(); });
-    window.addEventListener('mouseup',()=>{ if(drag) img.style.cursor='pointer'; drag=false; });
-    img.addEventListener('dblclick',(e)=>{ e.preventDefault(); scale=1; ox=0; oy=0; apply(); });
-
-    const close=()=>{ o.remove(); unlockPageScroll(); document.removeEventListener('keydown', onKey); };
-    const onKey=(ev)=>{ if(ev.key==='Escape') close(); };
-    document.addEventListener('keydown', onKey);
-    o.addEventListener('click', e=>{ if(e.target===o) close(); });
-    o.addEventListener('touchmove', e=> e.preventDefault(), {passive:false});
-
-    document.body.appendChild(o);
-    img.setAttribute('tabindex','0'); setTimeout(()=>img.focus(),50);
-  }
-
-  function handleBubbleImages(){
-    document.querySelectorAll('.vibe-msg-bubble .vibe-img-wrap').forEach(wrap=>{
-      const img=wrap.querySelector('img'); const hb=wrap.querySelector('.vibe-img-hitbox'); if(!img||!hb) return;
-      const handler=e=>{
-        e.preventDefault(); e.stopPropagation();
-        const a=img.closest('a'); const href=a&&a.href?a.href:img.src;
-        if(/\.(png|jpe?g|gif|webp)$/i.test(href)&&!/img_deb\.ashx/i.test(href)) openLightbox(href); else openLightbox(img.src);
-      };
-      img.addEventListener('click',handler); hb.addEventListener('click',handler);
-    });
-  }
-
-  // мягкая «удалить»
-  function initRemoveButtonFix(){
-    document.querySelectorAll('a.target[href*="id_s="][href*="del="]').forEach(link=>{
-      const url=location.origin+location.pathname+link.getAttribute('href');
-      const bubble=link.closest('.vibe-msg-out')||link.closest('td')||link.parentElement; if(!bubble) return;
-      const meta=bubble.querySelector('.vibe-msg-meta')||bubble;
-      if(meta.querySelector('.vibe-remove-btn-soft')){ link.remove(); return; }
-      const btn=document.createElement('span'); btn.className='vibe-remove-btn-soft'; btn.textContent='удалить';
-      btn.addEventListener('click',e=>{
-        e.preventDefault(); btn.textContent='...'; btn.style.opacity='.6';
-        GM_xmlhttpRequest({ method:'GET', url, onload:r=>{ if(r.status===200) location.reload(); else{ btn.textContent='ошибка'; btn.style.backgroundColor='#ff9900'; } },
-          onerror:()=>{ btn.textContent='ошибка сети'; btn.style.backgroundColor='#ff9900'; }});
-      });
-      link.remove(); meta.prepend(btn);
-    });
-  }
-
-  // ---------- Скролл к сообщению из hash (ОДИН РАЗ) ----------
-  function scrollToMessageFromHash(){
-    if(!location.hash.startsWith('#vibe_msg=')){ ST.hashScrolledRaw=null; return; }
-    const raw = decodeURIComponent(location.hash.replace(/^#vibe_msg=/,'')).replace(/\s+/g,' ').trim();
-
-    // уже проскроллили к этому значению — больше не трогаем
-    if (ST.hashScrolledRaw === raw) return;
-
-    const tryScrollOnce = ()=>{
-      if (ST.hashScrolledRaw === raw) return true; // кто-то уже сделал
-
-      // 1) ищем наш таймштамп в bubble
-      let target = document.querySelector(
-        `.vibe-msg-meta[data-full-date="${CSS?.escape ? CSS.escape(raw) : raw.replace(/"/g,'\\"')}"]`
-      );
-
-      // 2) по началу строки
-      if(!target){
-        const metas=[...document.querySelectorAll('.vibe-msg-meta')];
-        target = metas.find(m=>{
-          const full=(m.getAttribute('data-full-date')||m.textContent||'').replace(/\s+/g,' ').trim();
-          return full===raw || (raw.length>3 && full.startsWith(raw.slice(0,-3)));
+                    if (status === 200) {
+                        if (finalUrl.includes('login.asp')) {
+                            return reject(new Error('Ошибка авторизации при получении последнего сообщения'));
+                        }
+                        const html = response.responseText || '';
+                        const msg  = extractLastMessageFromHtml(html);
+                        if (msg != null && String(msg).trim() !== '') {
+                            bananzaDebugLog('[BananzaMailz][Получено от Digiseller]:', msg.split('\n'));
+                            resolve(msg);
+                        } else {
+                            reject(new Error("Нет сообщений!"));
+                        }
+                    } else {
+                        reject(new Error("Ошибка запроса: " + status));
+                    }
+                },
+                onerror: function() { reject(new Error("Ошибка сети или CORS")); }
+            });
         });
-      }
-
-      // 3) самый грубый fallback
-      if(!target){
-        const tds=[...document.querySelectorAll('td.td_title')];
-        target = tds.find(td => (td.textContent||'').replace(/\s+/g,' ').trim()===raw );
-      }
-
-      if(!target) return false;
-
-      // помечаем как обработанный ДО скролла — чтобы не «возвращало»
-      ST.hashScrolledRaw = raw;
-
-      const bubble = target.closest('.vibe-msg-bubble') || target;
-      bubble.scrollIntoView({behavior:'smooth', block:'center'});
-      const old = bubble.style.boxShadow;
-      bubble.style.boxShadow = '0 0 0 3px #ffe38a, 0 0 14px #ffe38a';
-      setTimeout(()=> bubble.style.boxShadow = old, 2600);
-      return true;
-    };
-
-    (function attempt(left){
-      if(tryScrollOnce()) return;
-      if(left>0) setTimeout(()=>attempt(left-1),300);
-    })(24); // ~7.2с на ожидание ajax/рендеринга
-  }
-
-  function enforceTimeInMeta(){
-    document.querySelectorAll('.vibe-msg-meta').forEach(el=>{
-      const btn=el.querySelector('.vibe-remove-btn-soft');
-      const src=el.getAttribute('data-full-date')||(el.textContent||'').trim();
-      const m=src.match(/\b(\d{1,2}:\d{2}:\d{2})\b/); el.textContent=m?m[1]:'';
-      if(btn) el.prepend(btn);
-    });
-  }
-
-  // ---------- Инициализация ----------
-  function mainInit(force){
-    if(force || !ST.initedOnce || ST.lastUrl!==location.href){
-      ST.initedOnce=true;
-      if(ST.lastUrl!==location.href) window.vibeMsgGroups={};
-      ST.lastUrl=location.href;
-
-      transformAllMessages();
-      groupMessagesByDate();
-      drawFakeButtonsRow();
-      initRemoveButtonFix();
-      handleBubbleImages();
-      enforceTimeInMeta();
-      scrollToMessageFromHash();
     }
-  }
 
-  const obs=new MutationObserver(()=>{
-    const now=Date.now();
-    if(now-ST.lastMutationRun>300){
-      ST.lastMutationRun=now;
-      mainInit(true);
-      updateCommentPanelBounds();
-      updateCommentPanelData();
+    // Более устойчивый извлекатель последнего сообщения
+    function extractLastMessageFromHtml(html) {
+        const temp = document.createElement('div');
+        temp.innerHTML = html;
+
+        // Вариант 1: как раньше — первая строка в таблице
+        let fonts = temp.querySelectorAll('table[cellpadding="2"] tr font[color="b2b2b2"]');
+        let text = pickFirstNonEmptyFont(fonts);
+        if (text) return text;
+
+        // Вариант 2: любой font[color="b2b2b2"]
+        fonts = temp.querySelectorAll('font[color="b2b2b2"]');
+        text = pickFirstNonEmptyFont(fonts);
+        if (text) return text;
+
+        // Вариант 3: содержимое крупных ячеек слева (часто сообщение)
+        const bigTds = temp.querySelectorAll('table[cellpadding="2"] tr td[width="100%"], table[cellpadding="2"] tr td[colspan]');
+        for (const td of bigTds) {
+            const txt = cleanupTd(td);
+            if (txt) return txt;
+        }
+
+        // Если ни один вариант не дал текст — считаем, что сообщений нет
+        return null;
+
+        function pickFirstNonEmptyFont(list) {
+            for (const f of list) {
+                // Сохраняем переносы
+                const copy = f.cloneNode(true);
+                // заменим <br> на \n, затем снимем текст
+                copy.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
+                const t = copy.textContent.trim();
+                if (t) return t;
+            }
+            return null;
+        }
+        function cleanupTd(td) {
+            const copy = td.cloneNode(true);
+            copy.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
+            const txt = copy.textContent.trim();
+            return txt || '';
+        }
     }
-  });
-  obs.observe(document.body,{childList:true,subtree:true});
 
-  window.addEventListener('load',()=>{ mainInit(true); updateCommentPanelBounds(); setInterval(enforceTimeInMeta,1500); });
-  window.addEventListener('resize',()=> updateCommentPanelBounds());
-  window.addEventListener('popstate',()=>{ mainInit(true); updateCommentPanelBounds(); });
+    /** =============== ПОЛЕЗНЫЕ МЕЛОЧИ =============== */
+    function prettyDiff(a, b) {
+        const A = normalizeForCompare(a).split('\n');
+        const B = normalizeForCompare(b).split('\n');
+        const max = Math.max(A.length, B.length);
+        const lines = [];
+        for (let i=0;i<max;i++){
+            const la = A[i] ?? '';
+            const lb = B[i] ?? '';
+            const same = (la === lb);
+            lines.push(`${same ? '   =' : '  ≠'} [${i+1}] ${same ? la : (la + '  ⇄  ' + lb)}`);
+        }
+        return lines.join('\n');
+    }
+    function sleep(ms) { return new Promise(res=>setTimeout(res,ms)); }
+    function enableVibeScroll(id) {
+        const el = typeof id === "string" ? document.getElementById(id) : id;
+        if (!el) return;
+        el.addEventListener('wheel', function(e) {
+            const scrollTop = el.scrollTop, scrollHeight = el.scrollHeight, clientHeight = el.clientHeight, delta = e.deltaY;
+            const atTop = scrollTop === 0 && delta < 0;
+            const atBottom = scrollTop + clientHeight >= scrollHeight && delta > 0;
+            if ((delta < 0 && !atTop) || (delta > 0 && !atBottom)) {
+                el.scrollTop += delta;
+                e.stopPropagation();
+                e.preventDefault();
+            } else if (atTop || atBottom) {
+                e.stopPropagation();
+                e.preventDefault();
+            }
+        }, { passive: false });
+    }
 
-  // при смене hash — сбрасываем флаг и пытаемся прокрутиться один раз
-  window.addEventListener('hashchange',()=>{
-    ST.hashScrolledRaw = null;
-    mainInit(true);
-    updateCommentPanelBounds();
-  });
+    /** =============== СТИЛИ =============== */
+    const style = document.createElement('style');
+    style.textContent = `
+.bananza-fab {
+    position: fixed;
+    right: 100px;
+    bottom: 20px;
+    width: 40px; height: 40px;
+    background: rgba(32,34,42,0.97);
+    color: gold;
+    border-radius: 50%;
+    border: 2px solid gold;
+    box-shadow: 0 6px 26px #0009;
+    font-size: 24px;
+    display: flex;
+    align-items: center; justify-content: center;
+    cursor: pointer;
+    opacity: 1; transform: scale(1);
+    z-index: 1000999;
+    transition: opacity 0.25s, transform 0.23s;
+}
+.bananza-mailz-close{
+    position: absolute; top: 14px; right: 14px; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
+    background: rgba(38,38,42,0.87); border-radius: 25%; border: 2px solid gold; color: gold;
+    font-size: 22px; font-weight: bold; cursor: pointer; opacity: 0.88; z-index:10; transition: background .15s, opacity .15s, box-shadow .15s;
+    box-shadow: 0 3px 14px #0005;
+}
+#bananza-mailz-close:hover { opacity: 1; background: #2c2f38; box-shadow: 0 6px 26px #0008;}
+.bananza-fab-show { opacity: 1; pointer-events: auto; transform: scale(1); transition: opacity 0.27s, transform 0.19s; }
+.bananza-fab-hide { opacity: 0; pointer-events: none; transform: scale(0.78) translateY(24px); transition: opacity 0.23s, transform 0.18s; }
+.bananza-fab:hover { filter: brightness(1.15);}
+.bananza-panel {
+    position: fixed;
+    right: 34px;
+    bottom: 30px;
+    z-index: 1000999;
+    min-width: 360px;
+    max-width: 480px;
+    max-height: 640px;
+    background: rgba(28,32,44,0.98);
+    color: #ffe37e;
+    border-radius: 19px;
+    font-size: 17px;
+    box-shadow: 0 10px 38px #000b,0 1.5px 4px #000a;
+    border: 2px solid gold;
+    padding: 22px 23px 16px 17px;
+    margin-bottom: 18px;
+    box-sizing: border-box;
+    animation: vibeGrowIn .23s;
+    display: flex;
+    flex-direction: column;
+    min-height: 220px;
+    opacity: 1;
+    transform: scale(1);
+    transition: opacity 0.32s, transform 0.22s;
+}
+.bananza-panel-show { opacity: 1; transform: scale(1); pointer-events: auto; transition: opacity 0.32s, transform 0.22s; }
+.bananza-panel-hide { opacity: 0; transform: scale(0.96) translateY(32px); pointer-events: none; transition: opacity 0.22s, transform 0.16s; }
+.bananza-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 20px; font-weight: bold; color: gold; }
+.bananza-title { color: gold; font-size: 19px; font-weight: bold; margin-left: 4px;}
+.bananza-action-btn { background: none; border: none; color: gold; font-size: 17px; cursor: pointer; border-radius: 8px; transition: background .13s; padding: 2px 7px; margin-left: 2px;}
+.bananza-action-btn:hover { background:#24262d; }
+.bananza-info { margin-bottom: 6px; font-size: 16.5px;}
+.bananza-msg {
+    background: #292e39;
+    padding: 10px 12px;
+    border-radius: 8px;
+    margin: 4px 0 10px 0;
+    font-size: 16px;
+    color: #ffe37e;
+    max-height: 85px;
+    overflow: auto;
+    width: 100%;
+    word-break: break-word;
+    overflow-wrap: break-word;
+    white-space: pre-line;
+    box-sizing: border-box;
+    display: block;
+    min-width: 0;
+    scrollbar-width: thin;
+    scrollbar-color: gold #23272b;
+}
+.bananza-actions { margin-bottom:7px; }
+.bananza-progress { font-size:15px; margin-bottom:3px; }
+.bananza-log {
+    text-align:left;
+    font-size:15px;
+    max-height:160px;
+    overflow:auto;
+    border-radius:7px;
+    background:#23242c;
+    padding:7px 8px 6px 13px;
+    color:#e1f8a7;
+    min-height:26px;
+    scrollbar-width: thin;
+    scrollbar-color: gold #23272b;
+}
+.ds-bananza-glow-btn { transition: box-shadow 0.16s, filter 0.13s; font-size: 16px; padding: 7px 19px 7px 16px; border-radius:8px;min-width:140px;font-weight:600;}
+.ds-green { background: #bfff79; color: #212; border: none;}
+.ds-green:hover { box-shadow: 0 0 18px 0 #8be881cc, 0 1px 8px #cafcd1b0;}
+.ds-yellow { background: #ffe37e; color: #222; border: none; }
+.ds-yellow:hover { box-shadow: 0 0 18px 0 #ffe37ecc, 0 1px 8px #fff7c1b0; filter: brightness(1.08); }
+.ds-grey { background: #444; color: #ffe37e; border:none; }
+.ds-grey:hover { background: #555; color: #fffbe0; box-shadow: 0 0 10px #ffe37e55; }
+.ds-bananza-glow-btn:disabled { opacity:.74; filter:grayscale(0.23);}
+details > summary { list-style: none; }
+details > summary::-webkit-details-marker { display: none; }
+@keyframes vibeGrowIn { from { opacity:0; transform:scale(0.91) translateY(34px);} to { opacity:1; transform:none; } }
+`;
+    document.head.appendChild(style);
+
+    /** =============== ИНИЦИАЛИЗАЦИЯ =============== */
+    loadBananzaStore();
+    setTimeout(createMonkeyBtn, 40);
+    setTimeout(() => {
+        if (pausedAt > 0 && monkeProgress < sellers.length) {
+            showBananzaPanel();
+        }
+    }, 100);
+
+    /** =============== ИНТЕГРАЦИЯ С ТАБЛИЦЕЙ =============== */
+    function sendLogToSheet(id, log, url) {
+        let logValue = log;
+        if (url) {
+            const safeLog = String(log).replace(/"/g, '""');
+            logValue = `=HYPERLINK("${url}";"${safeLog}")`;
+        }
+        fetch(APPS_SCRIPT_API_URL + `?action=set_log&id=${encodeURIComponent(id)}&log=${encodeURIComponent(logValue)}`)
+            .then(r=>r.json()).catch(()=>{});
+    }
+
 })();
