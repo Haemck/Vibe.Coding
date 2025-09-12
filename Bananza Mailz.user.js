@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Digiseler: Bananza Mailz
 // @namespace    http://tampermonkey.net/
-// @version      6.2
-// @description  Bananza Mailz — авторассылка с максимально лояльной проверкой (игнор пустых строк, html-entities и кавычек). Полный лог! 🦍🍌 + устойчивые парсеры + не блокируемся при отсутствии истории сообщений.
+// @version      6.3
+// @description  Bananza Mailz — авторассылка с максимально лояльной проверкой (игнор пустых строк, html-entities и кавычек). Полный лог! 🦍🍌 + устойчивые парсеры + не блокируемся при отсутствии истории сообщений. Поддержка уникальных сообщений в разных форматах данных.
 // @author       vibe.coding
 // @match        https://my.digiseller.ru/*
 // @grant        GM_xmlhttpRequest
@@ -61,13 +61,103 @@
 
         let lines = s.split('\n').map(x => x.trim());
         lines = lines.filter(line => line !== '');     // убираем пустые строки
-        // если первая/последняя строка в «кавычке» — уберём крайние (мягко)
+        // Если первая/последняя строка в «кавычке» — мягко уберём крайние
         if (lines.length && /^['"]/.test(lines[0])) lines[0] = lines[0].slice(1);
         if (lines.length && /['"]$/.test(lines[lines.length-1])) lines[lines.length-1] = lines[lines.length-1].slice(0,-1);
         return lines.join('\n');
     }
     function superUltraCompare(a, b) {
         return normalizeForCompare(a) === normalizeForCompare(b);
+    }
+
+    /** =============== ИД+СООБЩЕНИЯ: РОБАСТНЫЙ ПАРСЕР =============== */
+    // Поддерживаем разные ключи id
+    const ID_KEYS = ['id','seller_id','id_s','sid','seller','sellerId','sellerID','Id','ID'];
+    // Поддерживаем разные ключи сообщения
+    const MSG_KEYS = ['message','msg','text','body','content','m','Message','Text','Body','Content'];
+
+    // Получить ID из произвольной структуры (число/строка/объект)
+    function extractId(raw) {
+        if (raw == null) return '';
+        if (typeof raw === 'number' || typeof raw === 'string') return String(raw).trim();
+        if (typeof raw === 'object') {
+            for (const k of ID_KEYS) {
+                if (raw[k] != null && String(raw[k]).trim() !== '') return String(raw[k]).trim();
+            }
+        }
+        return '';
+    }
+
+    // Получить уникальное сообщение из объекта продавца (возможны разные поля и типы)
+    function extractUniqueMessage(raw) {
+        if (!raw || typeof raw !== 'object') return '';
+        // 1) Строковые поля
+        for (const k of MSG_KEYS) {
+            if (typeof raw[k] === 'string' && raw[k].trim()) return decodeHtmlEntities(raw[k]).trim();
+        }
+        // 2) Массив строк (часто message_lines)
+        if (Array.isArray(raw.message_lines)) {
+            const s = raw.message_lines.filter(x => typeof x === 'string' && x.trim()).join('\n').trim();
+            if (s) return decodeHtmlEntities(s);
+        }
+        if (Array.isArray(raw.msg_lines)) {
+            const s = raw.msg_lines.filter(x => typeof x === 'string' && x.trim()).join('\n').trim();
+            if (s) return decodeHtmlEntities(s);
+        }
+        // 3) HTML-поле
+        if (typeof raw.html === 'string' && raw.html.trim()) {
+            const temp = document.createElement('div');
+            temp.innerHTML = raw.html;
+            temp.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
+            const s = temp.textContent.trim();
+            if (s) return s;
+        }
+        return '';
+    }
+
+    // Нормализация входящего массива sellers + возможной мапы {id: message}
+    function normalizeSellers(rawSellers, maybeMap) {
+        const map = (maybeMap && typeof maybeMap === 'object') ? maybeMap : null;
+        const out = [];
+
+        (rawSellers || []).forEach(item => {
+            const id = extractId(item);
+            if (!id) return; // без ID — пропускаем
+
+            // Сообщение может быть внутри item, либо в мапе
+            let uniq = extractUniqueMessage(item);
+
+            if (map && map[id] != null) {
+                const m = String(map[id] ?? '').trim();
+                if (m) uniq = m; // мапа приоритетна, если непустая
+            }
+
+            out.push({ id, message: uniq });
+        });
+
+        // Если пришла только мапа без массива продавцов — поддержим это
+        if ((!out.length) && map) {
+            Object.keys(map).forEach(id => {
+                const m = String(map[id] ?? '').trim();
+                out.push({ id: String(id).trim(), message: m });
+            });
+        }
+
+        return out;
+    }
+
+    // Резолв сообщения для отправки (уникальное или глобальное)
+    function resolveToSend(entry, globalMsg) {
+        const gm = (globalMsg || '').trim();
+        const um = (entry?.message || '').trim();
+        if (um) return { toSend: um, isUnique: true };
+        // Доп. проверка иных возможных ключей, если вдруг объект пришёл «сырой»
+        let fallback = '';
+        for (const k of MSG_KEYS) {
+            if (typeof entry?.[k] === 'string' && entry[k].trim()) { fallback = entry[k].trim(); break; }
+        }
+        if (fallback) return { toSend: fallback, isUnique: true };
+        return { toSend: gm, isUnique: false };
     }
 
     /** =============== ЛОКАЛЬНОЕ ХРАНИЛИЩЕ =============== */
@@ -318,8 +408,14 @@
         fetch(APPS_SCRIPT_API_URL + '?action=get_data')
             .then(r=>r.json())
             .then(data=>{
-                sellers       = Array.isArray(data.sellers) ? data.sellers : [];
+                // data.sellers: могут быть числа/строки/объекты
+                // data.sellers_message_map: опциональная мапа { id: message }
+                const raw = Array.isArray(data.sellers) ? data.sellers : [];
+                const map = (data.sellers_message_map && typeof data.sellers_message_map === 'object') ? data.sellers_message_map : null;
+
+                sellers       = normalizeSellers(raw, map);
                 message       = (data.message || '').trim();
+
                 logs          = [];
                 errors        = [];
                 monkeProgress = 0;
@@ -327,8 +423,13 @@
                 pausedAt      = 0;
                 isSending     = false;
                 lastUpdate    = Date.now();
+
                 renderBananzaPanel();
                 saveBananzaStore();
+
+                // Диагностика, видно ли уникальные сообщения
+                const uniqCount = sellers.filter(s => (s.message||'').trim()).length;
+                logBananza(`Загружено продавцов: ${sellers.length}. Уникальных сообщений: ${uniqCount}.`);
             })
             .catch(e=>{
                 document.getElementById('bananza-go-msg').textContent = 'Ошибка загрузки данных!';
@@ -344,14 +445,13 @@
         // Ревизия нескольких предыдущих — чтобы закрыть хвост перед продолжением
         const checkFrom = Math.max(0, startIdx - 2);
         for (let j = checkFrom; j < startIdx; ++j) {
-            const id = String(sellers[j]?.id || sellers[j]);
-            const uniqueMsg = (sellers[j]?.message || '').trim();
-            const globalMsg = (message || '').trim();
-            const toSend    = uniqueMsg ? uniqueMsg : globalMsg;
+            const entry = sellers[j];
+            const id = String(entry?.id || extractId(entry));
+            const {toSend, isUnique} = resolveToSend(entry, message);
 
             if (!toSend) { logBananza(`[${j+1}] ID ${id}: нет сообщения, пропущено (ревизия)`, true); continue; }
 
-            logBananza(`[${j+1}] ID ${id}: ревизия последнего сообщения...`);
+            logBananza(`[${j+1}] ID ${id}: ревизия последнего сообщения... (${isUnique ? 'УНИКАЛЬНОЕ' : 'глобальное'})`);
             try {
                 const lastMsg = await getLastSellerMsg(id);
                 if (DEBUG_VERBOSE) {
@@ -396,13 +496,12 @@
                 logBananza(`<b>Рассылка поставлена на паузу. Можно продолжить в любой момент.</b>`, true);
                 renderBananzaPanel(); saveBananzaStore(); return;
             }
-            const id = String(sellers[i]?.id || sellers[i]);
-            const uniqueMsg = (sellers[i]?.message || '').trim();
-            const globalMsg = (message || '').trim();
-            const toSend    = uniqueMsg ? uniqueMsg : globalMsg;
+            const entry = sellers[i];
+            const id = String(entry?.id || extractId(entry));
+            const {toSend, isUnique} = resolveToSend(entry, message);
             if (!toSend) { logBananza(`[${i+1}] ID ${id}: нет сообщения, пропущено`, true); continue; }
 
-            logBananza(`[${i+1}] ID ${id}: проверяю последнее сообщение...`);
+            logBananza(`[${i+1}] ID ${id}: проверяю последнее сообщение... (${isUnique ? 'УНИКАЛЬНОЕ' : 'глобальное'})`);
             try {
                 const lastMsg = await getLastSellerMsg(id);
                 if (DEBUG_VERBOSE) {
@@ -415,7 +514,7 @@
                     logBananza(`[${i+1}] ID ${id}: уже отправлено, пропускаем!`);
                     await sendLogToSheet(id, 'Уже отправлено', `https://my.digiseller.ru/asp/seller_messages.asp?id_s=${id}`);
                 } else {
-                    logBananza(`[${i+1}] ID ${id}: отправляю...`);
+                    logBananza(`[${i+1}] ID ${id}: отправляю... (${isUnique ? 'УНИКАЛЬНОЕ' : 'глобальное'})`);
                     await sendMsgToSeller(id, toSend, i+1);
                 }
             } catch(e) {
