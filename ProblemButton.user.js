@@ -1,24 +1,29 @@
 // ==UserScript==
-// @name         Digiseller: Кнопка Проблемы 
+// @name         Digiseller: Кнопка Проблемы
 // @namespace    https://digiseller.ru/
-// @version      5.1
-// @description  Обновляет первую запись с пустым «Номер заказа» (без ложных срабатываний даже после изменения схемы), иначе создаёт новую. Продавец — ТЕКСТ из span.dm-seller-link. Оптимистичный UI: мгновенно «Улетело ✓», запрос — фоном, статус — тостом.
+// @version      5.2
+// @description  Обновляет первую ПУСТУЮ запись в Lark (по field_id), иначе создаёт новую. Параллельно дублирует отправку в Google Таблицу через Apps Script webhook. Seller = текст из span.dm-seller-link. Оптимистичный UI.
+// @author       vibe
 // @match        https://my.digiseller.ru/asp/inv_of_buyer.asp*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
 // @connect      open.larksuite.com
-// @updateURL    https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/ProblemButton.user.js
-// @downloadURL  https://raw.githubusercontent.com/Haemck/Vibe.Coding/refs/heads/main/ProblemButton.user.js
+// @connect      script.google.com
 // ==/UserScript==
+
 (function () {
   'use strict';
 
-  // ===== Lark config =====
+  // =================== КОНФИГ Lark ===================
   const LARK_APP_ID     = 'cli_a81cb0e116b4102f';
   const LARK_APP_SECRET = 'PxOqztub8iur2iEXsynuCbjG8QqQKb48';
   const LARK_APP_TOKEN  = 'Md1BbzhFDawwyNsvRggl8ngqgle';
   const LARK_TABLE_ID   = 'tblDJRpsVKzzScRx';
 
+  // =================== КОНФИГ Google Apps Script (как в ProblemButton.user.js) ===================
+  const WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycby9faXrrhwzFRxGO3TdL-v6KCNI8pfZjCPZ8tl5r9jh0d4NqHbJmXXj6saUnqydz01j/exec';
+
+  // Имена столбцов (человеческие) — используются для маппинга
   const FIELD_NAMES = {
     order:    'Номер заказа',     // Number
     date:     'Дата',             // Date (ms epoch)
@@ -31,12 +36,12 @@
   const SET_DEFAULT_STATUS  = true;
   const DEFAULT_STATUS_TEXT = 'Не решено';
 
-  // ===== LS keys =====
+  // =================== КЭШИ ===================
   const LS_KEY_LARK_TOKEN   = 'lark_token_cache';
   const LS_KEY_FIELDS_INFO  = `lark_fields_${LARK_APP_TOKEN}_${LARK_TABLE_ID}`;
   const LS_KEY_OPERATOR     = 'bananza_operator_name';
 
-  // ===== Styles (button + toasts) =====
+  // =================== Стили (кнопка + тосты) ===================
   GM_addStyle(`
     .dm-floating-export-wrap{position:absolute;z-index:9999;display:flex;align-items:center;top:0;left:0;pointer-events:none}
     .dm-floating-export-inner{pointer-events:auto;display:flex;align-items:center;min-width:0}
@@ -50,7 +55,6 @@
       transition:box-shadow .14s,width .22s cubic-bezier(.61,1.69,.6,.93);min-width:80px;max-width:450px;width:110px;margin:0;box-sizing:border-box;line-height:1.4;display:block;flex:1 1 110px}
     .dm-export-send-btn-morph{background:#fff4f4;border:1.5px solid #ffb8b8;border-radius:4px;color:#222 !important;font-size:17px;font-weight:700;
       padding:2px 14px;cursor:pointer;margin:0;height:32px;transition:background .12s,border-color .12s;box-shadow:0 1px 7px 0 #ffb8b833;outline:none;display:flex;align-items:center;justify-content:center}
-    .dm-export-send-btn-morph:disabled{opacity:.55;cursor:not-allowed}
     .dm-export-operator-btn{background:#fff4f4;border:1.5px solid #ffb8b8;border-radius:4px;color:#ba6fb0;font-size:18px;font-weight:600;
       padding:2px 6px;cursor:pointer;margin-left:7px;height:32px;min-width:27px;outline:none;display:flex;align-items:center;opacity:.34;transition:background .10s,border-color .10s,color .15s,opacity .15s}
     .dm-export-operator-field{font-size:15px;margin-left:7px;width:170px;padding:2px 12px;border:1.5px solid #ffb8b8;border-radius:4px;background:#fff8f8;color:#4a3841;outline:none;transition:box-shadow .13s;flex:none;display:block}
@@ -60,7 +64,7 @@
     .dm-toast.err{border-left-color:#d9534f}
   `);
 
-  // ===== Helpers =====
+  // =================== Хелперы ===================
   const J = (t)=>{try{return JSON.parse(t)}catch{return null}};
   const getLS=(k,d=null)=>{const v=localStorage.getItem(k);return v==null?d:v;};
   const setLS=(k,v)=>localStorage.setItem(k, typeof v==='string'?v:JSON.stringify(v));
@@ -74,7 +78,7 @@
   function norm(s){return String(s||'').toLowerCase().replace(/\s+/g,'').replace(/[«»"']/g,'').replace(/№/g,'no').trim();}
   const isFieldNameNotFound = (txt)=>/1254045|FieldNameNotFound/i.test(String(txt||''));
 
-  // seller nickname
+  // ===== продавец (ник) из span.dm-seller-link + номер заказа =====
   function getSellerNickname(){
     const el = document.querySelector('span.dm-seller-link[title*="Открыть профиль продавца"]');
     return el ? el.textContent.trim() : '';
@@ -96,20 +100,30 @@
     return { seller, order };
   }
 
-  // ===== HTTP =====
+  // =================== HTTP ===================
   function gmRequest({method,url,headers={},data,timeout=30000}){
     return new Promise((resolve,reject)=>{
-      GM_xmlhttpRequest({method,url,headers,data,timeout,onload:r=>resolve(r),onerror:e=>reject(e),ontimeout:()=>reject(new Error('Request timeout'))});
+      GM_xmlhttpRequest({method,url,headers,data,timeout,
+        onload:r=>resolve(r),
+        onerror:e=>reject(e),
+        ontimeout:()=>reject(new Error('Request timeout'))
+      });
     });
   }
   const gmGet=(url,headers={})=>gmRequest({method:'GET',url,headers});
-  const gmPostJSON=(url,json,headers={})=>gmRequest({method:'POST',url,headers:Object.assign({'Content-Type':'application/json; charset=utf-8'},headers),data:JSON.stringify(json||{})});
+  const gmPostJSON=(url,json,headers={})=>gmRequest({
+    method:'POST',
+    url,
+    headers:Object.assign({'Content-Type':'application/json; charset=utf-8'},headers),
+    data:JSON.stringify(json||{})
+  });
 
-  // ===== Auth =====
+  // =================== Auth (Lark) ===================
   async function getLarkTenantToken(){
     const c=J(getLS(LS_KEY_LARK_TOKEN));
     if(c && c.token && c.exp && Date.now()<c.exp-60_000) return c.token;
-    const r=await gmPostJSON('https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal',{ app_id:LARK_APP_ID, app_secret:LARK_APP_SECRET });
+    const r=await gmPostJSON('https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal',
+      { app_id:LARK_APP_ID, app_secret:LARK_APP_SECRET });
     if(r.status!==200) throw new Error(`Auth HTTP ${r.status}: ${r.responseText}`);
     const d=J(r.responseText); if(!d || d.code!==0 || !d.tenant_access_token) throw new Error('Auth error: '+r.responseText);
     const token=d.tenant_access_token, expMs=Date.now()+((d.expire?d.expire:7200)*1000);
@@ -117,7 +131,7 @@
     return token;
   }
 
-  // ===== Schema =====
+  // =================== Схема таблицы (Lark) ===================
   async function listFieldsAll(){
     const token=await getLarkTenantToken();
     let url=`https://open.larksuite.com/open-apis/bitable/v1/apps/${encodeURIComponent(LARK_APP_TOKEN)}/tables/${encodeURIComponent(LARK_TABLE_ID)}/fields?page_size=200`;
@@ -159,7 +173,7 @@
     return info;
   }
 
-  // ===== Build fields =====
+  // =================== Формирование полей (Lark) ===================
   function buildFieldsByName(values, info){
     const F={}, k=f=>f.name;
     if(info.order && values.order!=null){ const n=castInt(values.order); if(n!==undefined) F[k(info.order)]=n; }
@@ -181,15 +195,15 @@
     return F;
   }
 
-  // ===== Find first EMPTY by field_id (safe) =====
+  // =================== Найти первую ПУСТУЮ по field_id ===================
   async function findFirstEmptyOrderRecordId(info){
     const token=await getLarkTenantToken();
     const orderId = info.order && info.order.id;
     if(!orderId) return null;
 
     let pageToken='';
-    let candidateMissing=null; // первая запись БЕЗ ключа (считаем пустой только если ключ точно верный)
-    let seenNonEmptyUnderKey=false; // хотя бы в одной записи ключ присутствует и не пуст
+    let candidateMissing=null;
+    let seenNonEmptyUnderKey=false;
     const headers = { Authorization:`Bearer ${token}`, 'X-Field-Key':'field_id' };
 
     while(true){
@@ -204,25 +218,20 @@
         const fields = rec.fields || {};
         if(Object.prototype.hasOwnProperty.call(fields, orderId)){
           const v = fields[orderId];
-          if(v === '' || v === null){ return rec.record_id; } // явно пустое значение
+          if(v === '' || v === null){ return rec.record_id; }
           else { seenNonEmptyUnderKey = true; }
         } else if(candidateMissing===null){
-          candidateMissing = rec.record_id; // нет ключа
+          candidateMissing = rec.record_id;
         }
       }
       if(data.data && data.data.has_more && data.data.page_token){ pageToken=data.data.page_token; continue; }
       break;
     }
-
-    // Если мы уверены, что ключ правильный (видели его хотя бы у одной записи),
-    // то отсутствие ключа у записи трактуем как пустоту.
     if(seenNonEmptyUnderKey && candidateMissing){ return candidateMissing; }
-
-    // Иначе — лучше создать новую (чтобы не перетереть чужие данные).
     return null;
   }
 
-  // ===== POST with retry =====
+  // =================== POST c ретраем (Lark) ===================
   async function postWithRetry(url, headers, payload){
     let tries=4;
     while(tries-- > 0){
@@ -246,8 +255,8 @@
     throw new Error('Bitable: too many retries');
   }
 
-  // ===== Upsert =====
-  async function upsert(values, {forceCreate=false}={}){
+  // =================== Upsert в Lark ===================
+  async function upsertLark(values, {forceCreate=false}={}){
     const token=await getLarkTenantToken();
     let info = await ensureFieldsInfo(false);
 
@@ -287,8 +296,6 @@
         return await tryByIdUpdate(emptyId);
       }
     }
-
-    // пустых нет или не доверяем ключу — создаём
     try{
       return await tryByNameCreate();
     }catch(e1){
@@ -303,7 +310,29 @@
     }
   }
 
-  // ===== UI & UX =====
+  // =================== Отправка в Google Таблицу ===================
+  function sendToGoogleSheet({order, today, seller, comment, operator}){
+    return new Promise((resolve,reject)=>{
+      GM_xmlhttpRequest({
+        method: "POST",
+        url: WEBHOOK_URL,
+        headers: {"Content-Type": "application/json"},
+        data: JSON.stringify({
+          // формат ровно как в ProblemButton.user.js
+          row: [order, today, seller, '', comment, operator]
+        }),
+        timeout: 30000,
+        onload: (resp)=>{
+          const ok = resp.status===200 && String(resp.responseText||'').includes('OK');
+          ok ? resolve(true) : reject(new Error(`Sheet HTTP ${resp.status}: ${resp.responseText}`));
+        },
+        onerror: ()=>reject(new Error('Sheet network error')),
+        ontimeout: ()=>reject(new Error('Sheet timeout'))
+      });
+    });
+  }
+
+  // =================== UI & UX ===================
   let busyUntil = 0;
   function resetBtn(btn,text){ btn.innerHTML=text; btn.classList.remove('expanded','has-operator'); btn.disabled=false; btn.style.width=''; }
   function autosizeInput(input,max){
@@ -323,26 +352,30 @@
   function getToday(){ return getTodayStr(); }
 
   function sendOptimistic(orderRaw, today, seller, comment, operator, btn, opts){
+    // мгновенный отклик
     resetBtn(btn,'Улетело ✓');
     setTimeout(()=>resetBtn(btn,'Проблема'), 900);
 
-    upsert({
+    // параллельно: Lark + Google Sheet
+    const larkPromise  = upsertLark({
       order: orderRaw,
       dateMs: yyyymmddToMs(today),
       seller,
       comment: comment || '',
       operator: operator || ''
-    }, opts).then(()=> toast('Записано в Lark ✓', true)
-    ).catch(e=>{
-      console.error('[ProblemButton:Lark]', e);
-      toast('Ошибка записи в Lark', false);
-      btn.innerHTML='Ошибка!'; setTimeout(()=>resetBtn(btn,'Проблема'),1300);
-    });
+    }, opts);
+
+    const sheetPromise = sendToGoogleSheet({order: orderRaw, today, seller, comment, operator});
+
+    Promise.allSettled([larkPromise, sheetPromise]).then(([r1, r2])=>{
+      if(r1.status==='fulfilled') toast('Lark ✓', true); else toast('Lark: ошибка', false);
+      if(r2.status==='fulfilled') toast('Google Sheet ✓', true); else toast('Google Sheet: ошибка', false);
+    }).catch(()=>{/* не нужно, уже обработано в allSettled */});
   }
 
   function makeButton(){
     const btn=document.createElement('button');
-    btn.className='dm-cb-link dm-export-btn-morph'; btn.type='button'; btn.innerHTML='Проблема'; btn.title='Заполнить/создать строку в Lark';
+    btn.className='dm-cb-link dm-export-btn-morph'; btn.type='button'; btn.innerHTML='Проблема'; btn.title='Заполнить/создать строку в Lark и в Google Таблице';
     let opened=false, opInput=null, cleanup=null;
 
     btn.addEventListener('click', (ev)=>{
@@ -370,7 +403,7 @@
 
       function finish(evt){
         opened=false; btn.blur(); if(cleanup) cleanup();
-        const forceCreate = evt && evt.altKey; // ALT + Enter/клик => создать новую
+        const forceCreate = evt && evt.altKey; // ALT + Enter/клик => создать новую в Lark
         const { seller, order } = getSellerAndOrder();
         const comment = input.value.trim();
         const operator = opInput ? opInput.value.trim() : getOp();
